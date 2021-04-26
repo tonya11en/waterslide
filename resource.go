@@ -14,164 +14,129 @@
 package main
 
 import (
-	"time"
+	"fmt"
+	"io/ioutil"
+	"strconv"
 
+	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/ptypes"
 
-	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
-	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
-	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
-	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	bootstrap "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 )
 
-const (
-	ClusterName  = "example_proxy_cluster"
-	RouteName    = "local_route"
-	ListenerName = "listener_0"
-	ListenerPort = 10000
-	UpstreamHost = "www.envoyproxy.io"
-	UpstreamPort = 80
-)
+type ResourceManager struct {
+	unmarshaler *jsonpb.Unmarshaler
 
-func makeCluster(clusterName string) *cluster.Cluster {
-	return &cluster.Cluster{
-		Name:                 clusterName,
-		ConnectTimeout:       ptypes.DurationProto(5 * time.Second),
-		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_LOGICAL_DNS},
-		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
-		LoadAssignment:       makeEndpoint(clusterName),
-		DnsLookupFamily:      cluster.Cluster_V4_ONLY,
-	}
+	configFilePath string
+
+	bootstrapProto *bootstrap.Bootstrap
+
+	version uint64
 }
 
-func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
-	return &endpoint.ClusterLoadAssignment{
-		ClusterName: clusterName,
-		Endpoints: []*endpoint.LocalityLbEndpoints{{
-			LbEndpoints: []*endpoint.LbEndpoint{{
-				HostIdentifier: &endpoint.LbEndpoint_Endpoint{
-					Endpoint: &endpoint.Endpoint{
-						Address: &core.Address{
-							Address: &core.Address_SocketAddress{
-								SocketAddress: &core.SocketAddress{
-									Protocol: core.SocketAddress_TCP,
-									Address:  UpstreamHost,
-									PortSpecifier: &core.SocketAddress_PortValue{
-										PortValue: UpstreamPort,
-									},
-								},
-							},
-						},
-					},
-				},
-			}},
-		}},
-	}
-}
-
-func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
-	return &route.RouteConfiguration{
-		Name: routeName,
-		VirtualHosts: []*route.VirtualHost{{
-			Name:    "local_service",
-			Domains: []string{"*"},
-			Routes: []*route.Route{{
-				Match: &route.RouteMatch{
-					PathSpecifier: &route.RouteMatch_Prefix{
-						Prefix: "/",
-					},
-				},
-				Action: &route.Route_Route{
-					Route: &route.RouteAction{
-						ClusterSpecifier: &route.RouteAction_Cluster{
-							Cluster: clusterName,
-						},
-						HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
-							HostRewriteLiteral: UpstreamHost,
-						},
-					},
-				},
-			}},
-		}},
-	}
-}
-
-func makeHTTPListener(listenerName string, route string) *listener.Listener {
-	// HTTP filter configuration
-	manager := &hcm.HttpConnectionManager{
-		CodecType:  hcm.HttpConnectionManager_AUTO,
-		StatPrefix: "http",
-		RouteSpecifier: &hcm.HttpConnectionManager_Rds{
-			Rds: &hcm.Rds{
-				ConfigSource:    makeConfigSource(),
-				RouteConfigName: route,
-			},
+// Create a new resource manager struct.
+func NewResourceManager(configPath string) (*ResourceManager, error) {
+	rm := &ResourceManager{
+		unmarshaler: &jsonpb.Unmarshaler{
+			AllowUnknownFields: false,
+			AnyResolver:        nil,
 		},
-		HttpFilters: []*hcm.HttpFilter{{
-			Name: wellknown.Router,
-		}},
+		configFilePath: configPath,
+		version:        0,
 	}
-	pbst, err := ptypes.MarshalAny(manager)
+
+	bp, err := rm.loadBootstrapFromFile(configPath)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("error loading bootstrap from file %s: %v+", configPath, err)
 	}
+	rm.bootstrapProto = bp
 
-	return &listener.Listener{
-		Name: listenerName,
-		Address: &core.Address{
-			Address: &core.Address_SocketAddress{
-				SocketAddress: &core.SocketAddress{
-					Protocol: core.SocketAddress_TCP,
-					Address:  "0.0.0.0",
-					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: ListenerPort,
-					},
-				},
-			},
-		},
-		FilterChains: []*listener.FilterChain{{
-			Filters: []*listener.Filter{{
-				Name: wellknown.HTTPConnectionManager,
-				ConfigType: &listener.Filter_TypedConfig{
-					TypedConfig: pbst,
-				},
-			}},
-		}},
-	}
+	return rm, nil
 }
 
-func makeConfigSource() *core.ConfigSource {
-	source := &core.ConfigSource{}
-	source.ResourceApiVersion = resource.DefaultAPIVersion
-	source.ConfigSourceSpecifier = &core.ConfigSource_ApiConfigSource{
-		ApiConfigSource: &core.ApiConfigSource{
-			TransportApiVersion:       resource.DefaultAPIVersion,
-			ApiType:                   core.ApiConfigSource_GRPC,
-			SetNodeOnFirstMessageOnly: true,
-			GrpcServices: []*core.GrpcService{{
-				TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
-					EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: "xds_cluster"},
-				},
-			}},
-		},
+func (rm *ResourceManager) extractListeners(bs *bootstrap.Bootstrap) []types.Resource {
+	listeners := []types.Resource{}
+	for _, listenerObj := range bs.StaticResources.Listeners {
+		listeners = append(listeners, listenerObj)
 	}
-	return source
+	return listeners
 }
 
-func GenerateSnapshot() cache.Snapshot {
+func (rm *ResourceManager) extractRouteConfig(bs *bootstrap.Bootstrap) []types.Resource {
+	routeConfig := []types.Resource{}
+	for _, listenerObj := range bs.StaticResources.Listeners {
+		for _, fchain := range listenerObj.FilterChains {
+			for _, filter := range fchain.Filters {
+				hcmConfig := &hcm.HttpConnectionManager{}
+				err := ptypes.UnmarshalAny(filter.GetTypedConfig(), hcmConfig)
+				if err != nil {
+					l.Infof("Unable to parse type %s as HCM", filter.GetTypedConfig().TypeUrl)
+					continue
+				}
+
+				routeConfig = append(routeConfig, hcmConfig.GetRouteConfig())
+			}
+		}
+	}
+	return routeConfig
+}
+
+func (rm *ResourceManager) extractClusters(bs *bootstrap.Bootstrap) []types.Resource {
+	clusters := []types.Resource{}
+	for _, c := range bs.StaticResources.Clusters {
+		clusters = append(clusters, c)
+	}
+	return clusters
+}
+
+func (rm *ResourceManager) extractEndpoints(bs *bootstrap.Bootstrap) []types.Resource {
+	endpoints := []types.Resource{}
+	for _, c := range bs.StaticResources.Clusters {
+		for _, ep := range c.LoadAssignment.Endpoints {
+			for _, lbendpoint := range ep.LbEndpoints {
+				endpoints = append(endpoints, lbendpoint.GetEndpoint())
+			}
+		}
+	}
+	return endpoints
+}
+
+func (rm *ResourceManager) loadBootstrapFromFile(file string) (*bootstrap.Bootstrap, error) {
+	fstr, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	bs := bootstrap.Bootstrap{}
+	err = jsonpb.UnmarshalString(string(fstr), &bs)
+	if err != nil {
+		return nil, err
+	}
+
+	return &bs, nil
+}
+
+func (rm *ResourceManager) GenerateSnapshot() cache.Snapshot {
+	bp, err := rm.loadBootstrapFromFile(rm.configFilePath)
+	if bp != nil && err != nil {
+		l.Errorf("error loading bootstrap from file: %v+", err)
+	}
+	rm.version += 1
+	version := strconv.Itoa(int(rm.version))
+
 	return cache.NewSnapshot(
-		"1",
-		[]types.Resource{}, // endpoints
-		[]types.Resource{makeCluster(ClusterName)},
-		[]types.Resource{makeRoute(RouteName, ClusterName)},
-		[]types.Resource{makeHTTPListener(ListenerName, RouteName)},
-		[]types.Resource{}, // runtimes
-		[]types.Resource{}, // secrets
+		version,
+		[]types.Resource{},                     // endpoints
+		rm.extractClusters(rm.bootstrapProto),  // clusters
+		[]types.Resource{},                     // routes
+		rm.extractListeners(rm.bootstrapProto), // listeners
+		[]types.Resource{},                     // runtimes
+		[]types.Resource{},                     // secrets
+		//rm.extractEndpoints(rm.bootstrapProto),   // endpoints
+		//rm.extractRouteConfig(rm.bootstrapProto), // routes
 	)
 }
