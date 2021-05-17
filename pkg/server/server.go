@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 )
@@ -15,7 +17,7 @@ type server struct {
 }
 
 func NewServer(ctx context.Context) *server {
-	return nil
+	return &server{}
 }
 
 // A generic RPC stream.
@@ -26,18 +28,31 @@ type Stream interface {
 	Recv() (*discovery.DeltaDiscoveryRequest, error)
 }
 
-// SotW stream for ADS server.
+// SotW stream handler for ADS server.
 func (srv *server) StreamAggregatedResources(stream discovery.AggregatedDiscoveryService_StreamAggregatedResourcesServer) error {
-	return fmt.Errorf("SotW stream is not supported/implemented")
+	_, _ = stream.Recv()
+	return status.Error(codes.Unimplemented, "SotW ADS is only supported for gRPC")
 }
 
-// Delta stream for ADS server.
+// Delta stream handler for ADS server.
 func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer) error {
-	return srv.adsStreamHandler(stream)
+	for {
+		ddr, err := stream.Recv()
+		if err == io.EOF {
+			// The client message stream has ended.
+			return nil
+		} else if err != nil {
+			return err
+		}
+
+		err = srv.processDeltaDiscoveryRequest(ddr)
+		if err != nil {
+			return err
+		}
+	}
 }
 
-// Handler for the delta ADS stream.
-func (srv *server) adsStreamHandler(stream Stream) error {
-	log.Println("handling stream! It's alive!")
+func (srv *server) processDeltaDiscoveryRequest(ddr *discovery.DeltaDiscoveryRequest) error {
+	fmt.Println("@tallen", ddr.String())
 	return nil
 }
