@@ -2,6 +2,8 @@
 
 .PHONY: compile
 compile:
+	mkdir -p bin && \
+	go mod tidy && \
 	go build -o ./bin/. ./...
 
 .PHONY: test
@@ -10,12 +12,12 @@ test: compile
 
 .PHONY: install
 install:
-	go mod tidy
+	go install google.golang.org/protobuf/cmd/protoc-gen-go && \
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 
 .PHONY: clean
 clean:
 	rm -rf bin
 
-
 .PHONY: all
-all: install compile test
+all: compile test
