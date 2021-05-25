@@ -14,11 +14,11 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-const bufSize = 1024 * 1024
-
 var lis *bufconn.Listener
 
 func init() {
+	const bufSize = 1024 * 1024
+
 	lis = bufconn.Listen(bufSize)
 	srv := NewServer(ctx.Background())
 	s := grpc.NewServer()
@@ -36,7 +36,8 @@ func bufDialer(ctx.Context, string) (net.Conn, error) {
 	return lis.Dial()
 }
 
-// Creates a bufconn to use in the ADS clients. This makes it so that the network is not involved.
+// Creates a bufconn to use in the ADS clients. This makes it so that the
+// network is not involved and we can quickly run tests deterministically.
 func getBufconn(t *testing.T) *grpc.ClientConn {
 	conn, err := grpc.DialContext(ctx.Background(), "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
 	if err != nil {

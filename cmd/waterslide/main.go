@@ -18,17 +18,24 @@ const (
 func main() {
 	log.Println("initializing")
 	ctx := context.Background()
+
+	log.Println("creating waterslide server")
 	srv := server.NewServer(ctx)
+
+	log.Println("creating gRPC server")
 	grpcServer := grpc.NewServer()
 
-	log.Println("sup")
-
+	log.Println("registering waterslide server as aggregated discovery service")
 	discovery.RegisterAggregatedDiscoveryServiceServer(grpcServer, srv)
 
 	log.Println("listening on", listenPort)
-	lis, _ := net.Listen("tcp", ":"+listenPort)
-	err := grpcServer.Serve(lis)
+	lis, err := net.Listen("tcp", ":"+listenPort)
 	if err != nil {
-		panic(err.Error())
+		log.Fatalln(err.Error())
+	}
+
+	err = grpcServer.Serve(lis)
+	if err != nil {
+		log.Fatalln(err.Error())
 	}
 }
