@@ -77,7 +77,7 @@ func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscovery
 		}
 
 		if first {
-			srv.getProcessor(ddr).ProcessInitialDeltaDiscoveryRequest(ddr, stream)
+			srv.getProcessor(ddr).ProcessInitialDeltaDiscoveryRequest(ddr, &stream)
 		} else {
 			srv.getProcessor(ddr).ProcessSubsequentDeltaDiscoveryRequest(ddr)
 		}
