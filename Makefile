@@ -8,12 +8,16 @@ compile:
 
 .PHONY: test
 test: compile
-	go test -race -cover ./...
+	go test -timeout 3s -v -race ./...
 
 .PHONY: install
 install:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go && \
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
+
+.PHONY: coverage
+coverage: compile
+	go test -race -cover ./...
 
 .PHONY: clean
 clean:

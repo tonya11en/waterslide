@@ -70,3 +70,24 @@ func TestSotWNotSupported(t *testing.T) {
 	err = stream.CloseSend()
 	assert.Nil(t, err)
 }
+
+func TestBogusResourcetype(t *testing.T) {
+	bc := getBufconn(t)
+	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
+
+	stream, err := client.DeltaAggregatedResources(ctx.Background())
+	assert.Nil(t, err)
+
+	req := &discovery.DeltaDiscoveryRequest{
+		TypeUrl: "bogus_type_url",
+	}
+
+	err = stream.Send(req)
+	assert.Nil(t, err)
+	_, err = stream.Recv()
+	log.Printf("error: %v", err)
+	assert.Equal(t, status.Code(err), codes.Unknown)
+	assert.Contains(t, err.Error(), "unknown type url")
+	err = stream.CloseSend()
+	assert.Nil(t, err)
+}

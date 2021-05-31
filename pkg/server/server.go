@@ -2,12 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"log"
 
 	"allen.gg/waterslide/pkg/server/protocol"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -20,15 +21,43 @@ type server struct {
 	clusterProcessor  *protocol.Processor
 	routeProcessor    *protocol.Processor
 	endpointProcessor *protocol.Processor
+	log               *zap.SugaredLogger
 }
 
 func NewServer(ctx context.Context) *server {
+	l, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err.Error())
+	}
+	log := l.Sugar()
+
+	lp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
+
+	cp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
+
+	rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
+
+	ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
+
 	return &server{
 		ctx:               context.Background(),
-		listenerProcessor: protocol.NewDeltaDiscoveryProcessor(ctx),
-		clusterProcessor:  protocol.NewDeltaDiscoveryProcessor(ctx),
-		routeProcessor:    protocol.NewDeltaDiscoveryProcessor(ctx),
-		endpointProcessor: protocol.NewDeltaDiscoveryProcessor(ctx),
+		listenerProcessor: lp,
+		clusterProcessor:  cp,
+		routeProcessor:    rp,
+		endpointProcessor: ep,
+		log:               log,
 	}
 }
 
@@ -46,27 +75,29 @@ func (srv *server) StreamAggregatedResources(stream discovery.AggregatedDiscover
 	return status.Error(codes.Unimplemented, "SotW ADS is only supported for gRPC")
 }
 
-func (srv *server) getProcessor(ddr *discovery.DeltaDiscoveryRequest) *protocol.Processor {
+func (srv *server) getProcessor(ddr *discovery.DeltaDiscoveryRequest) (*protocol.Processor, error) {
 	switch url := ddr.GetTypeUrl(); url {
 	case protocol.ClusterTypeUrl:
-		return srv.clusterProcessor
+		return srv.clusterProcessor, nil
 	case protocol.ListenerTypeUrl:
-		return srv.listenerProcessor
+		return srv.listenerProcessor, nil
 	case protocol.EndpointTypeUrl:
-		return srv.endpointProcessor
+		return srv.endpointProcessor, nil
 	case protocol.RouteTypeUrl:
-		return srv.routeProcessor
+		return srv.routeProcessor, nil
 	default:
-		log.Fatalf("unknown type url: %s", url)
+		srv.log.Errorw("unknown type url encountered", "url", url)
+		return nil, fmt.Errorf("unknown type url %s", url)
 	}
 
 	// Make the compiler happy.
-	return nil
+	panic("inaccessible region")
 }
 
 // Delta stream handler for ADS server.
 func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer) error {
 	first := true
+	subCh := make(chan *discovery.Resource)
 	for {
 		ddr, err := stream.Recv()
 		if err == io.EOF {
@@ -76,10 +107,15 @@ func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscovery
 			return err
 		}
 
+		p, err := srv.getProcessor(ddr)
+		if err != nil {
+			return err
+		}
+
 		if first {
-			srv.getProcessor(ddr).ProcessInitialDeltaDiscoveryRequest(ddr, &stream)
+			p.ProcessInitialDeltaDiscoveryRequest(srv.ctx, ddr, &stream, subCh)
 		} else {
-			srv.getProcessor(ddr).ProcessSubsequentDeltaDiscoveryRequest(ddr)
+			p.ProcessSubsequentDeltaDiscoveryRequest(srv.ctx, ddr, &stream, subCh)
 		}
 	}
 }

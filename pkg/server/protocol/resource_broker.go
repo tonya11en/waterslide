@@ -1,13 +1,14 @@
 package protocol
 
 import (
+	"fmt"
+
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"go.uber.org/zap"
 )
 
 // Ripped everything off from:
 // https://stackoverflow.com/questions/36417199/how-to-broadcast-message-using-channel
-
-const bufSize = 8
 
 type resourceSet map[chan *discovery.Resource]struct{}
 
@@ -15,44 +16,70 @@ type resourceBroker struct {
 	publishCh chan *discovery.Resource
 	subCh     chan chan *discovery.Resource
 	unsubCh   chan chan *discovery.Resource
+	done      chan struct{}
+	subs      resourceSet
+	running   bool
 
-	stop chan struct{}
+	log *zap.SugaredLogger
 }
 
-func newResourceBroker() *resourceBroker {
+func newResourceBroker(log *zap.SugaredLogger) (*resourceBroker, error) {
+	if log == nil {
+		l, err := zap.NewDevelopment()
+		if err != nil {
+			return nil, err
+		}
+		log = l.Sugar()
+	}
+
 	return &resourceBroker{
-		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 		publishCh: make(chan *discovery.Resource, 1),
 		subCh:     make(chan chan *discovery.Resource),
 		unsubCh:   make(chan chan *discovery.Resource),
-	}
+
+		subs:    make(resourceSet),
+		log:     log,
+		running: false,
+	}, nil
 }
 
-func (b *resourceBroker) Start() {
-	subs := make(resourceSet)
-	for {
-		b.doWorkStep(subs)
+func (b *resourceBroker) Start() error {
+	if b.running {
+		return fmt.Errorf("calling Start() on running broker")
 	}
+	b.running = true
+
+	go func() {
+		for {
+			if b.doWorkStep() {
+				return
+			}
+		}
+	}()
+
+	return nil
 }
 
-func (b *resourceBroker) doWorkStep(subs resourceSet) {
+// Returns true if done.
+func (b *resourceBroker) doWorkStep() bool {
 	select {
 	// Termination condition.
-	case <-b.stop:
-		// Close out all the message channels.
-		for msgCh := range subs {
-			close(msgCh)
-		}
-		return
+	case <-b.done:
+		b.log.Info("terminating broker")
+		return true
 	// Subscribe.
 	case msgCh := <-b.subCh:
-		subs[msgCh] = struct{}{}
+		b.log.Debug("subscribing resource")
+		b.subs[msgCh] = struct{}{}
 	// Unsubscribe.
 	case msgCh := <-b.unsubCh:
-		delete(subs, msgCh)
+		b.log.Debug("unsubscribing resource")
+		delete(b.subs, msgCh)
 	// Publish the resource out to subscribers.
 	case msg := <-b.publishCh:
-		for msgCh := range subs {
+		b.log.Debugw("publishing resource", "name", msg.GetName(), "num_subs", len(b.subs))
+		for msgCh := range b.subs {
 			// msgCh is buffered, use non-blocking send to protect the broker:
 			select {
 			case msgCh <- msg:
@@ -60,23 +87,22 @@ func (b *resourceBroker) doWorkStep(subs resourceSet) {
 			}
 		}
 	}
+	return false
 }
 
-func (b *resourceBroker) Stop() {
-	close(b.stop)
-}
-
-func (b *resourceBroker) Subscribe() chan *discovery.Resource {
-	msgCh := make(chan *discovery.Resource, bufSize)
+func (b *resourceBroker) Subscribe(msgCh chan *discovery.Resource) {
 	b.subCh <- msgCh
-	return msgCh
 }
 
 func (b *resourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
 	b.unsubCh <- msgCh
-	close(msgCh)
 }
 
 func (b *resourceBroker) Publish(msg *discovery.Resource) {
 	b.publishCh <- msg
+}
+
+func (b *resourceBroker) Stop() {
+	b.log.Info("stopping resource broker")
+	b.done <- struct{}{}
 }
