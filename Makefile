@@ -8,7 +8,7 @@ compile:
 
 .PHONY: test
 test: compile
-	go test -timeout 3s -v -race ./...
+	go test -v -timeout 3s -race ./...
 
 .PHONY: install
 install:

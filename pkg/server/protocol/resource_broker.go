@@ -34,7 +34,7 @@ func newResourceBroker(log *zap.SugaredLogger) (*resourceBroker, error) {
 
 	return &resourceBroker{
 		done:      make(chan struct{}),
-		publishCh: make(chan *discovery.Resource, 1),
+		publishCh: make(chan *discovery.Resource, 4),
 		subCh:     make(chan chan *discovery.Resource),
 		unsubCh:   make(chan chan *discovery.Resource),
 
@@ -70,39 +70,50 @@ func (b *resourceBroker) doWorkStep() bool {
 		return true
 	// Subscribe.
 	case msgCh := <-b.subCh:
-		b.log.Debug("subscribing resource")
 		b.subs[msgCh] = struct{}{}
 	// Unsubscribe.
 	case msgCh := <-b.unsubCh:
-		b.log.Debug("unsubscribing resource")
 		delete(b.subs, msgCh)
 	// Publish the resource out to subscribers.
 	case msg := <-b.publishCh:
-		b.log.Debugw("publishing resource", "name", msg.GetName(), "num_subs", len(b.subs))
 		for msgCh := range b.subs {
-			// msgCh is buffered, use non-blocking send to protect the broker:
-			select {
-			case msgCh <- msg:
-			default:
-			}
+			// TODO: Could potentially hang here.
+			msgCh <- msg
 		}
 	}
 	return false
 }
 
 func (b *resourceBroker) Subscribe(msgCh chan *discovery.Resource) {
+	if !b.running {
+		b.log.Fatal("broker is not started")
+	}
+
 	b.subCh <- msgCh
 }
 
 func (b *resourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
+	if !b.running {
+		b.log.Fatal("broker is not started")
+	}
+
 	b.unsubCh <- msgCh
 }
 
 func (b *resourceBroker) Publish(msg *discovery.Resource) {
+	if !b.running {
+		b.log.Fatal("broker is not started")
+	}
+
 	b.publishCh <- msg
 }
 
 func (b *resourceBroker) Stop() {
+	if !b.running {
+		b.log.Fatal("broker is not started")
+	}
+
 	b.log.Info("stopping resource broker")
 	b.done <- struct{}{}
+	b.running = false
 }
