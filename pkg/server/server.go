@@ -24,29 +24,27 @@ type server struct {
 	log               *zap.SugaredLogger
 }
 
-func NewServer(ctx context.Context) *server {
-	l, err := zap.NewDevelopment()
-	if err != nil {
-		panic(err.Error())
+func NewServer(ctx context.Context, log *zap.SugaredLogger) *server {
+	if log == nil {
+		panic("passed in nil logger")
 	}
-	log := l.Sugar()
 
-	lp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	lp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, "/tmp/tony_lp.cfg")
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	cp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	cp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, "/tmp/tony_cp.cfg")
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, "/tmp/tony_rp.cfg")
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log)
+	ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, "/tmp/tony_ep.cfg")
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}

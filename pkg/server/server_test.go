@@ -2,11 +2,11 @@ package server
 
 import (
 	ctx "context"
-	"log"
 	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"google.golang.org/grpc"
@@ -16,19 +16,26 @@ import (
 )
 
 var lis *bufconn.Listener
+var log *zap.SugaredLogger
 
 func init() {
 	const bufSize = 1024 * 1024
 
+	l, err := zap.NewDevelopment()
+	log = l.Sugar()
+	if err != nil {
+		panic(err.Error())
+	}
+
 	lis = bufconn.Listen(bufSize)
-	srv := NewServer(ctx.Background())
+	srv := NewServer(ctx.Background(), log)
 	s := grpc.NewServer()
 	discovery.RegisterAggregatedDiscoveryServiceServer(s, srv)
 
 	go func() {
 		err := s.Serve(lis)
 		if err != nil {
-			log.Fatalln(err.Error())
+			log.Fatal(err.Error())
 		}
 	}()
 }
@@ -85,7 +92,7 @@ func TestBogusResourcetype(t *testing.T) {
 	err = stream.Send(req)
 	assert.Nil(t, err)
 	_, err = stream.Recv()
-	log.Printf("error: %v", err)
+	log.Infof("error: %v", err)
 	assert.Equal(t, status.Code(err), codes.Unknown)
 	assert.Contains(t, err.Error(), "unknown type url")
 	err = stream.CloseSend()

@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"log"
 	"net"
 
 	"allen.gg/waterslide/pkg/server"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
@@ -16,26 +16,31 @@ const (
 )
 
 func main() {
-	log.Println("initializing")
+	l, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err.Error())
+	}
+	log := l.Sugar()
+
 	ctx := context.Background()
 
-	log.Println("creating waterslide server")
-	srv := server.NewServer(ctx)
+	log.Info("creating waterslide server")
+	srv := server.NewServer(ctx, log)
 
-	log.Println("creating gRPC server")
+	log.Info("creating gRPC server")
 	grpcServer := grpc.NewServer()
 
-	log.Println("registering waterslide server as aggregated discovery service")
+	log.Info("registering waterslide server as aggregated discovery service")
 	discovery.RegisterAggregatedDiscoveryServiceServer(grpcServer, srv)
 
-	log.Println("listening on", listenPort)
+	log.Info("listening on", listenPort)
 	lis, err := net.Listen("tcp", ":"+listenPort)
 	if err != nil {
-		log.Fatalln(err.Error())
+		log.Fatal(err.Error())
 	}
 
 	err = grpcServer.Serve(lis)
 	if err != nil {
-		log.Fatalln(err.Error())
+		log.Fatal(err.Error())
 	}
 }

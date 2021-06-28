@@ -168,7 +168,3 @@ func BenchmarkBroadcast10000(b *testing.B) {
 func BenchmarkBroadcast100000(b *testing.B) {
 	broadcastRunner(100000, b)
 }
-
-func BenchmarkBroadcast1000000(b *testing.B) {
-	broadcastRunner(1000000, b)
-}

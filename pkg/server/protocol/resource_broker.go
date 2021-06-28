@@ -52,36 +52,29 @@ func (b *resourceBroker) Start() error {
 
 	go func() {
 		for {
-			if b.doWorkStep() {
+			select {
+			case <-b.done:
+				// Termination condition.
+				b.running = false
+				b.log.Info("terminating broker")
 				return
+			// Subscribe.
+			case msgCh := <-b.subCh:
+				b.subs[msgCh] = struct{}{}
+			// Unsubscribe.
+			case msgCh := <-b.unsubCh:
+				delete(b.subs, msgCh)
+			// Publish the resource out to subscribers.
+			case msg := <-b.publishCh:
+				for msgCh := range b.subs {
+					// TODO: Could potentially hang here.
+					msgCh <- msg
+				}
 			}
 		}
 	}()
 
 	return nil
-}
-
-// Returns true if done.
-func (b *resourceBroker) doWorkStep() bool {
-	select {
-	// Termination condition.
-	case <-b.done:
-		b.log.Info("terminating broker")
-		return true
-	// Subscribe.
-	case msgCh := <-b.subCh:
-		b.subs[msgCh] = struct{}{}
-	// Unsubscribe.
-	case msgCh := <-b.unsubCh:
-		delete(b.subs, msgCh)
-	// Publish the resource out to subscribers.
-	case msg := <-b.publishCh:
-		for msgCh := range b.subs {
-			// TODO: Could potentially hang here.
-			msgCh <- msg
-		}
-	}
-	return false
 }
 
 func (b *resourceBroker) Subscribe(msgCh chan *discovery.Resource) {
@@ -115,5 +108,4 @@ func (b *resourceBroker) Stop() {
 
 	b.log.Info("stopping resource broker")
 	b.done <- struct{}{}
-	b.running = false
 }

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"allen.gg/waterslide/pkg/server/watcher"
+
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
 )
@@ -25,6 +27,11 @@ type Processor struct {
 	brokerMap map[string]*resourceBundle
 	rwLock    sync.RWMutex
 
+	resourceStream chan *discovery.Resource
+
+	// TODO: Use a resource ingest interface to abstract away fs watcher from some other resource stream.
+	fswatcher *watcher.ResourceWatcher
+
 	wildcardBroker *resourceBroker
 	ctx            context.Context
 	log            *zap.SugaredLogger
@@ -35,8 +42,14 @@ type resourceBundle struct {
 	broker   *resourceBroker
 }
 
-func NewDeltaDiscoveryProcessor(ctx context.Context, log *zap.SugaredLogger) (*Processor, error) {
+func NewDeltaDiscoveryProcessor(ctx context.Context, log *zap.SugaredLogger, fsWatchFile string) (*Processor, error) {
 	broker, err := newResourceBroker(log)
+	if err != nil {
+		return nil, err
+	}
+
+	resourceStream := make(chan *discovery.Resource)
+	fswatcher, err := watcher.NewFilesystemResourceWatcher(log, resourceStream)
 	if err != nil {
 		return nil, err
 	}
@@ -45,20 +58,50 @@ func NewDeltaDiscoveryProcessor(ctx context.Context, log *zap.SugaredLogger) (*P
 		brokerMap:      make(map[string]*resourceBundle),
 		ctx:            context.Background(),
 		wildcardBroker: broker,
+		log:            log,
+		fswatcher:      fswatcher,
+		resourceStream: resourceStream,
 	}
-	p.wildcardBroker.Start()
+
+	err = p.wildcardBroker.Start()
+	if err != nil {
+		return nil, err
+	}
+
+	go p.ingestResources()
+
+	fswatcher.Start(fsWatchFile)
 
 	return p, nil
+}
+
+func (p *Processor) ingestResources() {
+	for {
+		res := <-p.resourceStream
+		p.log.Infow("resource ingested", "resource", res.String())
+
+		go func() {
+			p.rwLock.RLock()
+			defer p.rwLock.RUnlock()
+			bundle := p.brokerMap[res.GetName()]
+			bundle.broker.Publish(res)
+		}()
+	}
 }
 
 func (p *Processor) ProcessSubsequentDeltaDiscoveryRequest(
 	ctx context.Context, ddr *discovery.DeltaDiscoveryRequest,
 	stream *discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer, subCh chan *discovery.Resource) {
+	// TODO
+	panic("not implemented")
 }
 
 func (p *Processor) ProcessInitialDeltaDiscoveryRequest(
 	ctx context.Context, ddr *discovery.DeltaDiscoveryRequest,
 	stream *discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer, subCh chan *discovery.Resource) {
+	p.log.Info("processing initial delta discovery request")
+
+	// TODO: Support aliases, not just the resource name.
 
 	if len(ddr.ResourceNamesSubscribe) == 0 {
 		// Initial requests with empty resource subscription lists signal a wildcard subscription.
@@ -80,7 +123,7 @@ func (p *Processor) ProcessInitialDeltaDiscoveryRequest(
 	go p.processResponses(ctx, stream, subCh)
 }
 
-// Fans in resource subscriptions into subCh and
+// Fans in resource subscriptions into subCh.
 func (p *Processor) doIndividualSubscriptions(ctx context.Context, subCh chan *discovery.Resource, resource_names []string) {
 	p.rwLock.RLock()
 	defer p.rwLock.RUnlock()
@@ -93,18 +136,17 @@ func (p *Processor) doIndividualSubscriptions(ctx context.Context, subCh chan *d
 			continue
 		}
 
-		subCh <- bundle.resource
-
 		bundle.broker.Subscribe(subCh)
+		subCh <- bundle.resource
 	}
 }
 
 // Plugs a wildcard subscription into the provided channel meant to feed resources to a subscriber.
 func (p *Processor) doWildcardSubscription(ctx context.Context, subCh chan *discovery.Resource) {
+	p.wildcardBroker.Subscribe(subCh)
+
 	p.rwLock.RLock()
 	defer p.rwLock.RUnlock()
-
-	p.wildcardBroker.Subscribe(subCh)
 
 	// Give the subscriber all of the current resources.
 	for _, bundle := range p.brokerMap {
