@@ -4,7 +4,8 @@ import (
 	"io/ioutil"
 
 	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/ptypes"
+
+	"allen.gg/waterslide/pkg/server/util"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/fsnotify/fsnotify"
@@ -36,7 +37,7 @@ func NewFilesystemResourceWatcher(log *zap.SugaredLogger, consumerStream chan *d
 	return rw, nil
 }
 
-func (rw *ResourceWatcher) handleWrite() error {
+func (rw *ResourceWatcher) readFromFile() error {
 	rw.log.Info("handling filesystem write")
 
 	data, err := ioutil.ReadFile(rw.filepath)
@@ -47,16 +48,16 @@ func (rw *ResourceWatcher) handleWrite() error {
 
 	err = jsonpb.UnmarshalString(string(data), &rw.resources)
 	if err != nil {
-		rw.log.Errorw("error unmarshaling proto from file data", "error", err.Error(), "file_data", string(data))
+		rw.log.Errorw("error unmarshaling proto from file data", "error", err.Error(), "file_data", data)
+		return err
 	}
 
 	for _, resourceAny := range rw.resources.Resources {
-		var resource *discovery.Resource
-		err := ptypes.UnmarshalAny(resourceAny, resource)
+		res, err := util.CreateResource(resourceAny)
 		if err != nil {
-			rw.log.Errorw("unable to unmarshal resource from anypb", "any", resourceAny.String(), "error", err.Error())
+			return err
 		}
-		rw.consumerStream <- resource
+		rw.consumerStream <- &res
 	}
 
 	return err
@@ -68,9 +69,13 @@ func (rw *ResourceWatcher) handleEvent(event fsnotify.Event) error {
 	var err error
 	switch event.Op {
 	case fsnotify.Write:
-		err = rw.handleWrite()
+		fallthrough
+	case fsnotify.Create:
+		fallthrough
+	case fsnotify.Rename:
+		err = rw.readFromFile()
 	default:
-		rw.log.Infow("disregarding op")
+		rw.log.Infow("disregarding op", "op", event.Op)
 	}
 
 	return err
@@ -113,5 +118,5 @@ func (rw *ResourceWatcher) Start(filepath string) error {
 		}
 	}()
 
-	return nil
+	return rw.readFromFile()
 }

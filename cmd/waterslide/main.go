@@ -33,7 +33,7 @@ func main() {
 	log.Info("registering waterslide server as aggregated discovery service")
 	discovery.RegisterAggregatedDiscoveryServiceServer(grpcServer, srv)
 
-	log.Info("listening on", listenPort)
+	log.Infow("listening", "port", listenPort)
 	lis, err := net.Listen("tcp", ":"+listenPort)
 	if err != nil {
 		log.Fatal(err.Error())

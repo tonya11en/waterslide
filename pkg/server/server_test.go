@@ -89,12 +89,12 @@ func TestBogusResourcetype(t *testing.T) {
 		TypeUrl: "bogus_type_url",
 	}
 
+	log.Infof("sending the bogus request", "req", req.String())
 	err = stream.Send(req)
+	log.Infof("done sending bogus request")
 	assert.Nil(t, err)
-	_, err = stream.Recv()
-	log.Infof("error: %v", err)
-	assert.Equal(t, status.Code(err), codes.Unknown)
-	assert.Contains(t, err.Error(), "unknown type url")
-	err = stream.CloseSend()
+	ddrsp, err := stream.Recv()
 	assert.Nil(t, err)
+	assert.Equal(t, ddrsp.GetTypeUrl(), "bogus_type_url")
+	assert.Equal(t, len(ddrsp.GetResources()), 0)
 }

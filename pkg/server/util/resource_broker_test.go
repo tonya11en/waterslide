@@ -1,4 +1,4 @@
-package protocol
+package util
 
 import (
 	"sync"
@@ -10,7 +10,7 @@ import (
 )
 
 func TestSubscribe(t *testing.T) {
-	broker, err := newResourceBroker(nil)
+	broker, err := NewResourceBroker(nil)
 	assert.Nil(t, err)
 	assert.Nil(t, broker.Start())
 	defer broker.Stop()
@@ -76,7 +76,7 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestUnsubscribe(t *testing.T) {
-	broker, err := newResourceBroker(nil)
+	broker, err := NewResourceBroker(nil)
 	assert.Nil(t, err)
 	assert.Nil(t, broker.Start())
 	defer broker.Stop()
@@ -121,7 +121,7 @@ func TestUnsubscribe(t *testing.T) {
 }
 
 func TestDoubleStart(t *testing.T) {
-	broker, err := newResourceBroker(nil)
+	broker, err := NewResourceBroker(nil)
 	assert.Nil(t, err)
 	assert.Nil(t, broker.Start())
 
@@ -129,7 +129,7 @@ func TestDoubleStart(t *testing.T) {
 }
 
 func broadcastRunner(i int, b *testing.B) {
-	broker, _ := newResourceBroker(nil)
+	broker, _ := NewResourceBroker(nil)
 	broker.Start()
 
 	// Setup.

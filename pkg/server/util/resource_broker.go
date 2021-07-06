@@ -1,4 +1,4 @@
-package protocol
+package util
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 
 type resourceSet map[chan *discovery.Resource]struct{}
 
-type resourceBroker struct {
+type ResourceBroker struct {
 	publishCh chan *discovery.Resource
 	subCh     chan chan *discovery.Resource
 	unsubCh   chan chan *discovery.Resource
@@ -23,7 +23,7 @@ type resourceBroker struct {
 	log *zap.SugaredLogger
 }
 
-func newResourceBroker(log *zap.SugaredLogger) (*resourceBroker, error) {
+func NewResourceBroker(log *zap.SugaredLogger) (*ResourceBroker, error) {
 	if log == nil {
 		l, err := zap.NewDevelopment()
 		if err != nil {
@@ -32,7 +32,7 @@ func newResourceBroker(log *zap.SugaredLogger) (*resourceBroker, error) {
 		log = l.Sugar()
 	}
 
-	return &resourceBroker{
+	return &ResourceBroker{
 		done:      make(chan struct{}),
 		publishCh: make(chan *discovery.Resource, 4),
 		subCh:     make(chan chan *discovery.Resource),
@@ -44,7 +44,7 @@ func newResourceBroker(log *zap.SugaredLogger) (*resourceBroker, error) {
 	}, nil
 }
 
-func (b *resourceBroker) Start() error {
+func (b *ResourceBroker) Start() error {
 	if b.running {
 		return fmt.Errorf("calling Start() on running broker")
 	}
@@ -77,7 +77,7 @@ func (b *resourceBroker) Start() error {
 	return nil
 }
 
-func (b *resourceBroker) Subscribe(msgCh chan *discovery.Resource) {
+func (b *ResourceBroker) Subscribe(msgCh chan *discovery.Resource) {
 	if !b.running {
 		b.log.Fatal("broker is not started")
 	}
@@ -85,7 +85,7 @@ func (b *resourceBroker) Subscribe(msgCh chan *discovery.Resource) {
 	b.subCh <- msgCh
 }
 
-func (b *resourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
+func (b *ResourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
 	if !b.running {
 		b.log.Fatal("broker is not started")
 	}
@@ -93,7 +93,7 @@ func (b *resourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
 	b.unsubCh <- msgCh
 }
 
-func (b *resourceBroker) Publish(msg *discovery.Resource) {
+func (b *ResourceBroker) Publish(msg *discovery.Resource) {
 	if !b.running {
 		b.log.Fatal("broker is not started")
 	}
@@ -101,7 +101,11 @@ func (b *resourceBroker) Publish(msg *discovery.Resource) {
 	b.publishCh <- msg
 }
 
-func (b *resourceBroker) Stop() {
+func (b *ResourceBroker) PublisherChannel() chan *discovery.Resource {
+	return b.publishCh
+}
+
+func (b *ResourceBroker) Stop() {
 	if !b.running {
 		b.log.Fatal("broker is not started")
 	}
