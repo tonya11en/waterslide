@@ -3,6 +3,7 @@ package util
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"strconv"
 	"time"
 
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -18,6 +19,22 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+// Compares the resource versions and decides if the new resource is actually "newer". Note that
+// this is not part of the xDS protocol, the version is just an arbitrary string.
+func IsNewerVersion(new string, existing string) bool {
+	newInt, err := strconv.Atoi(new)
+	if err != nil {
+		panic("bogus resource version error encountered when expecting incrementing version scheme: " + err.Error())
+	}
+
+	existingInt, err := strconv.Atoi(existing)
+	if err != nil {
+		panic("bogus resource version error encountered when expecting incrementing version scheme: " + err.Error())
+	}
+
+	return newInt > existingInt
+}
 
 // GetResourceName returns the resource name for a valid xDS response type.
 func GetResourceName(res proto.Message) string {
@@ -54,6 +71,11 @@ func CreateResource(anyRes *anypb.Any) (ret discovery.Resource, err error) {
 	ret.Name = GetResourceName(m)
 
 	return ret, err
+}
+
+func CreateResourceFromBytes(b []byte) (ret discovery.Resource, err error) {
+	err = proto.Unmarshal(b, &ret)
+	return
 }
 
 func MakeRandomNonce() string {

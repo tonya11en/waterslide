@@ -2,81 +2,28 @@ package protocol
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	"go.uber.org/zap"
 
 	"allen.gg/waterslide/pkg/server/util"
-	"allen.gg/waterslide/pkg/server/watcher"
 )
 
-type clientState struct {
-	// Tracks the active nonces and the responses sent for them.
-	nonceMap map[string]*discovery.DeltaDiscoveryResponse
-
-	// For a particular type URL, we track whether a rq has been encountered. Let's us know if a
-	// request is the first for a particular type.
-	rqReceived map[string]struct{}
-
-	// Where we receive resources that the client is subscribed to.
-	subCh chan *discovery.Resource
-}
-
-func makeClientState() clientState {
-	return clientState{
-		nonceMap:   make(map[string]*discovery.DeltaDiscoveryResponse),
-		rqReceived: make(map[string]struct{}),
-		subCh:      make(chan *discovery.Resource),
-	}
-}
-
-// The processor stores the state of the delta xDS protocol for a single resource type.
-type ClientStream *discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer
-type Processor struct {
-	brokerMap map[string]*resourceBundle
-	rwLock    sync.RWMutex
-
-	resourceStream chan *discovery.Resource
-
-	// TODO: Use a resource ingest interface to abstract away fs watcher from some other resource stream.
-	fswatcher *watcher.ResourceWatcher
-
-	wildcardBroker *util.ResourceBroker
-	ctx            context.Context
-	log            *zap.SugaredLogger
-	typeURL        string
-
-	clientStateMap map[ClientStream]clientState
-}
-
-type resourceBundle struct {
-	resource *discovery.Resource
-	broker   *util.ResourceBroker
-}
-
-func NewDeltaDiscoveryProcessor(ctx context.Context, log *zap.SugaredLogger, typeURL string, fsWatchFile string) (*Processor, error) {
-	broker, err := util.NewResourceBroker(log)
-	if err != nil {
-		return nil, err
-	}
-
-	resourceStream := make(chan *discovery.Resource)
-	fswatcher, err := watcher.NewFilesystemResourceWatcher(log, resourceStream)
+func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
+	broker, err := util.NewResourceBroker(config.Log)
 	if err != nil {
 		return nil, err
 	}
 
 	p := &Processor{
 		brokerMap:      make(map[string]*resourceBundle),
-		ctx:            context.Background(),
+		ctx:            config.Ctx,
 		wildcardBroker: broker,
-		log:            log,
-		fswatcher:      fswatcher,
-		resourceStream: resourceStream,
+		log:            config.Log,
+		ingest:         config.Ingest,
+		resourceStream: config.ResourceStream,
 		clientStateMap: make(map[ClientStream]clientState),
-		typeURL:        typeURL,
+		typeURL:        config.TypeURL,
 	}
 
 	err = p.wildcardBroker.Start()
@@ -86,9 +33,15 @@ func NewDeltaDiscoveryProcessor(ctx context.Context, log *zap.SugaredLogger, typ
 
 	go p.ingestResources()
 
-	fswatcher.Start(fsWatchFile)
-
 	return p, nil
+}
+
+func makeClientState() clientState {
+	return clientState{
+		nonceMap:   make(map[string]*discovery.DeltaDiscoveryResponse),
+		rqReceived: make(map[string]struct{}),
+		subCh:      make(chan *discovery.Resource),
+	}
 }
 
 func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle, error) {

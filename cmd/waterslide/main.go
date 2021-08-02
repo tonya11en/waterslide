@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"net"
 
 	"allen.gg/waterslide/pkg/server"
@@ -11,8 +12,8 @@ import (
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 )
 
-const (
-	listenPort = "8080"
+var (
+	listenPort = flag.String("port", "8080", "port the server listens on")
 )
 
 func main() {
@@ -33,8 +34,8 @@ func main() {
 	log.Info("registering waterslide server as aggregated discovery service")
 	discovery.RegisterAggregatedDiscoveryServiceServer(grpcServer, srv)
 
-	log.Infow("listening", "port", listenPort)
-	lis, err := net.Listen("tcp", ":"+listenPort)
+	log.Infow("listening", "port", *listenPort)
+	lis, err := net.Listen("tcp", ":"+(*listenPort))
 	if err != nil {
 		log.Fatal(err.Error())
 	}

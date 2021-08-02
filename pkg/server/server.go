@@ -41,23 +41,25 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger) *server {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.RouteTypeUrl, "/tmp/tony_rp.cfg")
-	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
-	}
+	/*
+		rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.RouteTypeUrl, "/tmp/tony_rp.cfg")
+		if err != nil {
+			log.Fatal("unable to create delta discovery processor", "error", err)
+		}
 
-	ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.EndpointTypeUrl, "/tmp/tony_ep.cfg")
-	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
-	}
+		ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.EndpointTypeUrl, "/tmp/tony_ep.cfg")
+		if err != nil {
+			log.Fatal("unable to create delta discovery processor", "error", err)
+		}
+	*/
 
 	return &server{
 		ctx:               context.Background(),
 		listenerProcessor: lp,
 		clusterProcessor:  cp,
-		routeProcessor:    rp,
-		endpointProcessor: ep,
-		log:               log,
+		//		routeProcessor:    rp,
+		//		endpointProcessor: ep,
+		log: log,
 	}
 }
 

@@ -71,8 +71,6 @@ func (rw *ResourceWatcher) handleEvent(event fsnotify.Event) error {
 	case fsnotify.Write:
 		fallthrough
 	case fsnotify.Create:
-		fallthrough
-	case fsnotify.Rename:
 		err = rw.readFromFile()
 	default:
 		rw.log.Infow("disregarding op", "op", event.Op)
