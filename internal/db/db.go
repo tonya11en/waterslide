@@ -20,7 +20,7 @@ type DatabaseHandle interface {
 	Put(ctx context.Context, resource *discovery.Resource, typeURL string) error
 	Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error)
 	GetAll(ctx context.Context, typeURL string) ([]*discovery.Resource, error)
-	ForEach(ctx context.Context, fn func(k, v []byte) error, typeURL string)
+	ForEach(ctx context.Context, predicate func(res *discovery.Resource), typeURL string) error
 }
 
 type DatabaseHandleConfig struct {
@@ -39,7 +39,8 @@ type dbHandle struct {
 	log *zap.SugaredLogger
 }
 
-// Creates a database handle.
+// Creates a database handle. If the DB file is an empty string, the database will be configured as
+// in-memory only.
 func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (DatabaseHandle, error) {
 	handle := &dbHandle{
 		ctx: ctx,
@@ -49,7 +50,11 @@ func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (Databa
 	// TODO: Use actual options, not default. Ought to limit number of goroutines.
 
 	var err error
-	handle.db, err = badger.Open(badger.DefaultOptions(config.Filepath))
+	opts := badger.DefaultOptions(config.Filepath)
+	if config.Filepath == "" {
+		opts.InMemory = true
+	}
+	handle.db, err = badger.Open(opts)
 	return handle, err
 }
 
@@ -116,7 +121,7 @@ func (handle *dbHandle) Put(ctx context.Context, resource *discovery.Resource, t
 			return err
 		}
 
-		handle.log.Debugw("write attempt complete", "key", key)
+		handle.log.Debugw("write attempt complete", "key", string(key))
 		return err
 	})
 }
@@ -145,7 +150,7 @@ func (handle *dbHandle) GetAll(ctx context.Context, typeURL string) ([]*discover
 	all := []*discovery.Resource{}
 	prefix := []byte("//" + typeURL + "/")
 
-	handle.db.View(func(txn *badger.Txn) error {
+	return all, handle.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
@@ -171,10 +176,36 @@ func (handle *dbHandle) GetAll(ctx context.Context, typeURL string) ([]*discover
 
 		return nil
 	})
-
-	return nil, nil
 }
 
-func (handle *dbHandle) ForEach(ctx context.Context, fn func(k, v []byte) error, typeURL string) {
+// Executes the predicate on each object of the specified 'typeURL'.
+func (handle *dbHandle) ForEach(ctx context.Context, predicate func(res *discovery.Resource), typeURL string) error {
+	prefix := []byte("//" + typeURL + "/")
 
+	return handle.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var res discovery.Resource
+				err := proto.Unmarshal(val, &res)
+				if err != nil {
+					handle.log.Errorw("failed to unmarshal item", "error", err.Error(), "key", string(it.Item().Key()))
+					return err
+				}
+
+				predicate(&res)
+				return nil
+			})
+
+			if err != nil {
+				handle.log.Errorw("prefix scan failed on foreach", "prefix", prefix, "error", err.Error())
+				return err
+			}
+		}
+
+		return nil
+	})
 }

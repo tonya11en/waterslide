@@ -5,13 +5,23 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 )
 
+var log *zap.SugaredLogger
+
+func init() {
+	l, err := zap.NewDevelopment()
+	log = l.Sugar()
+	if err != nil {
+		panic(err.Error())
+	}
+}
+
 func TestSubscribe(t *testing.T) {
-	broker, err := NewResourceBroker(nil)
-	assert.Nil(t, err)
+	broker := NewResourceBroker(log)
 	assert.Nil(t, broker.Start())
 	defer broker.Stop()
 
@@ -76,8 +86,7 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestUnsubscribe(t *testing.T) {
-	broker, err := NewResourceBroker(nil)
-	assert.Nil(t, err)
+	broker := NewResourceBroker(log)
 	assert.Nil(t, broker.Start())
 	defer broker.Stop()
 
@@ -121,15 +130,14 @@ func TestUnsubscribe(t *testing.T) {
 }
 
 func TestDoubleStart(t *testing.T) {
-	broker, err := NewResourceBroker(nil)
-	assert.Nil(t, err)
+	broker := NewResourceBroker(log)
 	assert.Nil(t, broker.Start())
 
 	assert.NotNil(t, broker.Start())
 }
 
 func broadcastRunner(i int, b *testing.B) {
-	broker, _ := NewResourceBroker(nil)
+	broker := NewResourceBroker(log)
 	broker.Start()
 
 	// Setup.

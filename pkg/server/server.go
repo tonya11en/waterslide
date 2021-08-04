@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
 	"allen.gg/waterslide/pkg/server/protocol"
 
@@ -26,9 +27,20 @@ type server struct {
 	log               *zap.SugaredLogger
 }
 
-func NewServer(ctx context.Context, log *zap.SugaredLogger) *server {
+// Creates a new server. If the DB filepath is empty, it will make an in-memory DB.
+func NewServer(ctx context.Context, log *zap.SugaredLogger, dbFilepath string) *server {
 	if log == nil {
 		panic("passed in nil logger")
+	}
+
+	handleConfig := db.DatabaseHandleConfig{
+		Filepath: dbFilepath,
+		Log:      log,
+	}
+
+	handle, err := db.NewDatabaseHandle(ctx, handleConfig)
+	if err != nil {
+		log.Fatalw("failed to initialize database handle", "error", err.Error())
 	}
 
 	config := protocol.ProcessorConfig{
@@ -36,6 +48,7 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger) *server {
 		Log:            log,
 		ResourceStream: make(chan *discovery.Resource),
 		Ingest:         &protocol.NoopIngest{},
+		DBHandle:       handle,
 	}
 
 	config.TypeURL = util.ListenerTypeUrl

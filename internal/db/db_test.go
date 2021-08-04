@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	badger "github.com/dgraph-io/badger/v3"
@@ -93,4 +94,28 @@ func TestIncrementingVersionSchemeBehavior(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "0", r.GetVersion())
+}
+
+func TestPrefixScan(t *testing.T) {
+	handle, err := newTestDatabaseHandle()
+	assert.Nil(t, err)
+
+	turl := "typeurl"
+
+	for i := 0; i < 1000; i++ {
+		x := strconv.Itoa(i)
+		err := handle.Put(ctx, &discovery.Resource{
+			Name:    "test_res_" + x,
+			Version: "0",
+		}, turl)
+		assert.Nil(t, err)
+	}
+
+	all, err := handle.GetAll(ctx, "bogus_type_url")
+	assert.Nil(t, err)
+	assert.Equal(t, 0, len(all))
+
+	all, err = handle.GetAll(ctx, turl)
+	assert.Nil(t, err)
+	assert.Equal(t, 1000, len(all))
 }

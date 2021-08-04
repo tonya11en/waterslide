@@ -23,13 +23,9 @@ type ResourceBroker struct {
 	log *zap.SugaredLogger
 }
 
-func NewResourceBroker(log *zap.SugaredLogger) (*ResourceBroker, error) {
+func NewResourceBroker(log *zap.SugaredLogger) *ResourceBroker {
 	if log == nil {
-		l, err := zap.NewDevelopment()
-		if err != nil {
-			return nil, err
-		}
-		log = l.Sugar()
+		panic("invalid logger")
 	}
 
 	return &ResourceBroker{
@@ -41,7 +37,7 @@ func NewResourceBroker(log *zap.SugaredLogger) (*ResourceBroker, error) {
 		subs:    make(resourceSet),
 		log:     log,
 		running: false,
-	}, nil
+	}
 }
 
 func (b *ResourceBroker) Start() error {

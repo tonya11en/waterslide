@@ -28,7 +28,7 @@ func init() {
 	}
 
 	lis = bufconn.Listen(bufSize)
-	srv := NewServer(ctx.Background(), log)
+	srv := NewServer(ctx.Background(), log, "")
 	s := grpc.NewServer()
 	discovery.RegisterAggregatedDiscoveryServiceServer(s, srv)
 

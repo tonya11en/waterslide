@@ -14,6 +14,7 @@ import (
 
 var (
 	listenPort = flag.String("port", "8080", "port the server listens on")
+	dbFilepath = flag.String("db_path", "/tmp/waterslide_db", "filepath to the database")
 )
 
 func main() {
@@ -26,7 +27,7 @@ func main() {
 	ctx := context.Background()
 
 	log.Info("creating waterslide server")
-	srv := server.NewServer(ctx, log)
+	srv := server.NewServer(ctx, log, *dbFilepath)
 
 	log.Info("creating gRPC server")
 	grpcServer := grpc.NewServer()

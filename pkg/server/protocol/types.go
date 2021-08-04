@@ -4,9 +4,11 @@ import (
 	"context"
 	"sync"
 
-	"allen.gg/waterslide/internal/util"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
+
+	"allen.gg/waterslide/internal/db"
+	"allen.gg/waterslide/internal/util"
 )
 
 type clientState struct {
@@ -24,10 +26,9 @@ type clientState struct {
 // The processor stores the state of the delta xDS protocol for a single resource type.
 type ClientStream *discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer
 type Processor struct {
-	brokerMap map[string]*resourceBundle
-	rwLock    sync.RWMutex
-
+	brokerMap      sync.Map
 	resourceStream chan *discovery.Resource
+	dbhandle       db.DatabaseHandle
 
 	// TODO: Use a resource ingest interface to abstract away fs watcher from some other resource stream.
 	ingest Ingester
@@ -51,4 +52,5 @@ type ProcessorConfig struct {
 	TypeURL        string
 	ResourceStream chan *discovery.Resource
 	Ingest         Ingester
+	DBHandle       db.DatabaseHandle
 }

@@ -10,13 +10,9 @@ import (
 )
 
 func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
-	broker, err := util.NewResourceBroker(config.Log)
-	if err != nil {
-		return nil, err
-	}
+	broker := util.NewResourceBroker(config.Log)
 
 	p := &Processor{
-		brokerMap:      make(map[string]*resourceBundle),
 		ctx:            config.Ctx,
 		wildcardBroker: broker,
 		log:            config.Log,
@@ -24,9 +20,10 @@ func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 		resourceStream: config.ResourceStream,
 		clientStateMap: make(map[ClientStream]clientState),
 		typeURL:        config.TypeURL,
+		dbhandle:       config.DBHandle,
 	}
 
-	err = p.wildcardBroker.Start()
+	err := p.wildcardBroker.Start()
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +46,7 @@ func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle,
 	var err error
 
 	bundle.resource = res
-	bundle.broker, err = util.NewResourceBroker(p.log)
+	bundle.broker = util.NewResourceBroker(p.log)
 	if err != nil {
 		p.log.Errorw("error creating resource bundle", "resource", res.String(), "error", err.Error())
 		return nil, err
@@ -64,24 +61,14 @@ func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle,
 }
 
 func (p *Processor) doResourceIngest(res *discovery.Resource) {
-	var bundle *resourceBundle
-	var err error
-
-	p.rwLock.Lock()
-	defer p.rwLock.Unlock()
-
-	bundle, ok := p.brokerMap[res.GetName()]
-	if !ok {
-		p.log.Infow("encountered new resource", "resource", res.String())
-		bundle, err = p.newResourceBundle(res)
+	b, loaded := p.brokerMap.LoadOrStore(res.GetName(), util.NewResourceBroker(p.log))
+	if !loaded {
+		err := b.(*util.ResourceBroker).Start()
 		if err != nil {
-			p.log.Errorw("dropping resource due to error creating resource bundle", "error", err.Error(), "resource", res.String())
-			return
+			p.log.Fatal(err.Error())
 		}
-		p.brokerMap[res.GetName()] = bundle
 	}
-
-	bundle.broker.Publish(res)
+	b.(*util.ResourceBroker).Publish(res)
 }
 
 func (p *Processor) ingestResources() {
@@ -96,16 +83,11 @@ func (p *Processor) doWildcardSubscription(ctx context.Context, subCh chan *disc
 	p.wildcardBroker.Subscribe(subCh)
 	p.log.Info("subscribed to wildcard broker")
 
-	p.rwLock.RLock()
-	defer p.rwLock.RUnlock()
-
-	p.log.Info("grabbed lock", "broker_map", p.brokerMap)
-
 	// Give the subscriber all of the current resources.
-	for _, bundle := range p.brokerMap {
-		p.log.Infow("adding resource to sub channel", "name", bundle.resource.GetName())
-		subCh <- bundle.resource
-	}
+	p.dbhandle.ForEach(p.ctx, func(res *discovery.Resource) {
+		p.log.Infow("adding resource to sub channel", "name", res.GetName())
+		subCh <- res
+	}, p.typeURL)
 }
 
 func (p *Processor) ProcessDeltaDiscoveryRequest(
@@ -158,19 +140,13 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 
 // Fans in resource subscriptions into subCh.
 func (p *Processor) doIndividualSubscriptions(ctx context.Context, subCh chan *discovery.Resource, resource_names []string) {
-	p.rwLock.RLock()
-	defer p.rwLock.RUnlock()
-
 	// Run through the resource names the client wants to subscribe to.
-	for _, res := range resource_names {
-		bundle, ok := p.brokerMap[res]
-		if !ok {
-			p.log.Warnw("node attempted subscribe to resource that is not in the broker map", "resource_name", res)
-			continue
+	for _, name := range resource_names {
+		res, err := p.dbhandle.Get(p.ctx, name, p.typeURL)
+		if err != nil {
+			p.log.Warnw("subscription failed for resource", "resource_name", name, "error", err.Error())
 		}
-
-		bundle.broker.Subscribe(subCh)
-		subCh <- bundle.resource
+		subCh <- res
 	}
 }
 
