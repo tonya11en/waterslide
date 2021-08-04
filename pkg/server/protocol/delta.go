@@ -6,7 +6,7 @@ import (
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 
-	"allen.gg/waterslide/pkg/server/util"
+	"allen.gg/waterslide/internal/util"
 )
 
 func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {

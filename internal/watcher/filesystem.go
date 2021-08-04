@@ -5,7 +5,7 @@ import (
 
 	"github.com/golang/protobuf/jsonpb"
 
-	"allen.gg/waterslide/pkg/server/util"
+	"allen.gg/waterslide/internal/util"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/fsnotify/fsnotify"

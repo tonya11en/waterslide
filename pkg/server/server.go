@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	"allen.gg/waterslide/internal/util"
 	"allen.gg/waterslide/pkg/server/protocol"
-	"allen.gg/waterslide/pkg/server/util"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 
@@ -31,35 +31,44 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger) *server {
 		panic("passed in nil logger")
 	}
 
-	lp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.ListenerTypeUrl, "/home/tallen/envoy-dynamic-lds-demo.yaml")
+	config := protocol.ProcessorConfig{
+		Ctx:            ctx,
+		Log:            log,
+		ResourceStream: make(chan *discovery.Resource),
+		Ingest:         &protocol.NoopIngest{},
+	}
+
+	config.TypeURL = util.ListenerTypeUrl
+	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	cp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.ClusterTypeUrl, "/home/tallen/envoy-dynamic-cds-demo.yaml")
+	config.TypeURL = util.ClusterTypeUrl
+	cp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
-	/*
-		rp, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.RouteTypeUrl, "/tmp/tony_rp.cfg")
-		if err != nil {
-			log.Fatal("unable to create delta discovery processor", "error", err)
-		}
+	config.TypeURL = util.RouteTypeUrl
+	rp, err := protocol.NewDeltaDiscoveryProcessor(config)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
 
-		ep, err := protocol.NewDeltaDiscoveryProcessor(ctx, log, util.EndpointTypeUrl, "/tmp/tony_ep.cfg")
-		if err != nil {
-			log.Fatal("unable to create delta discovery processor", "error", err)
-		}
-	*/
+	config.TypeURL = util.EndpointTypeUrl
+	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
 
 	return &server{
-		ctx:               context.Background(),
+		ctx:               ctx,
 		listenerProcessor: lp,
 		clusterProcessor:  cp,
-		//		routeProcessor:    rp,
-		//		endpointProcessor: ep,
-		log: log,
+		routeProcessor:    rp,
+		endpointProcessor: ep,
+		log:               log,
 	}
 }
 
@@ -71,7 +80,7 @@ type Stream interface {
 	Recv() (*discovery.DeltaDiscoveryRequest, error)
 }
 
-// SotW stream handler for ADS server.
+// SotW stream handler for ADS server. This isn't supported.
 func (srv *server) StreamAggregatedResources(stream discovery.AggregatedDiscoveryService_StreamAggregatedResourcesServer) error {
 	_, _ = stream.Recv()
 	return status.Error(codes.Unimplemented, "SotW ADS is only supported for gRPC")
@@ -127,11 +136,9 @@ func (srv *server) sendEmptyResponse(
 	send chan *discovery.DeltaDiscoveryResponse, typeURL string) {
 
 	go func() {
-		srv.log.Infow("@tallen sending response into channel")
 		send <- &discovery.DeltaDiscoveryResponse{
 			TypeUrl: typeURL,
 		}
-		srv.log.Infow("@tallen SENT response into channel")
 	}()
 }
 

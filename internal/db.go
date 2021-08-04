@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 
-	"github.com/boltdb/bolt"
+	badger "github.com/dgraph-io/badger/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -12,11 +12,15 @@ import (
 	"allen.gg/waterslide/internal/util"
 )
 
+// Whether the xDS resource version represents an ASCII integer (not actually part of the protocol).
+// Normally, the version is just an arbitrary string.
+var incrementingVersionScheme = flag.Bool("incrementing_versions", true, "if set to true, assumes that the xDS resource versions encountered are representations of integers and we will only update a resource if one with a \"newer\" verison is encountered")
+
 type DatabaseHandle interface {
-	Put(resource *discovery.Resource, typeURL string) error
-	Get(resourceName string, typeURL string) (*discovery.Resource, error)
-	GetAll(typeURL string) ([]*discovery.Resource, error)
-	ForEach(fn func(k, v []byte) error, typeURL string)
+	Put(ctx context.Context, resource *discovery.Resource, typeURL string) error
+	Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error)
+	GetAll(ctx context.Context, typeURL string) ([]*discovery.Resource, error)
+	ForEach(ctx context.Context, fn func(k, v []byte) error, typeURL string)
 }
 
 type DatabaseHandleConfig struct {
@@ -29,52 +33,75 @@ type DatabaseHandleConfig struct {
 type dbHandle struct {
 	ctx context.Context
 
-	// Handle for the BoltDB.
-	db *bolt.DB
+	// Handle for the BadgerDB.
+	db *badger.DB
 
 	log *zap.SugaredLogger
 }
 
+// Creates a database handle.
 func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (DatabaseHandle, error) {
-	var err error
-
-	if config.Log == nil {
-		l, err := zap.NewDevelopment()
-		if err != nil {
-			panic(err.Error())
-		}
-		config.Log = l.Sugar()
-	}
-
 	handle := &dbHandle{
 		ctx: ctx,
 		log: config.Log,
 	}
 
-	handle.db, err = bolt.Open(config.Filepath, 0600, nil)
+	// TODO: Use actual options, not default. Ought to limit number of goroutines.
+
+	var err error
+	handle.db, err = badger.Open(badger.DefaultOptions(config.Filepath))
 	return handle, err
 }
 
-var incrementingVersionScheme = flag.Bool("incrementing_versions", true, "if set to true, assumes that the xDS resource versions encountered are representations of integers and we will only update a resource if one with a \"newer\" verison is encountered")
+// Makes the appropriate key syntax.
+func makeKey(resourceName string, typeURL string) []byte {
+	return []byte("//" + typeURL + "/" + resourceName)
+}
 
-func (handle *dbHandle) Put(resource *discovery.Resource, typeURL string) error {
-	name := resource.GetName()
-	return handle.db.Update(func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists([]byte(typeURL))
-		if err != nil {
-			handle.log.Error("error creating when conditionally creating bucket", "error", err.Error())
+// If there is an incrementing version scheme, returns "false" if the Put op is not for a newer
+// resource. Otherwise, returns true.
+func (handle *dbHandle) continueWithPutOp(
+	ctx context.Context, tx *badger.Txn, key []byte, resource *discovery.Resource) (bool, error) {
+
+	if !*incrementingVersionScheme {
+		handle.log.Debugw("operating without incrementing version scheme")
+		return true, nil
+	}
+
+	handle.log.Debugw("reading old value from db", "resource", resource.String())
+	item, err := tx.Get(key)
+
+	// If the key doesn't exist, we should definitely continue with the Put.
+	if err == badger.ErrKeyNotFound {
+		handle.log.Debugw("key not found", "key", key)
+		return true, nil
+	}
+
+	if err != nil {
+		handle.log.Errorw("error encountered during conditional write", "error", err.Error())
+		return false, err
+	}
+
+	handle.log.Debugw("found key", "key", string(key))
+	var existing discovery.Resource
+	err = item.Value(func(val []byte) error {
+		existing, err = util.CreateResourceFromBytes(val)
+		return err
+	})
+
+	isNewer := util.IsNewerVersion(resource.GetVersion(), existing.GetVersion())
+	handle.log.Debugw("@tallen", "is newer", isNewer, "resrouce", resource.String(), "existing", existing.String())
+	return isNewer, err
+}
+
+// If 'incrementingVersionScheme' is true, this is a conditional write if the 'resource' is a newer
+// version than what exists already in the DB. Otherwise, it's a straight-forward Put operation.
+func (handle *dbHandle) Put(ctx context.Context, resource *discovery.Resource, typeURL string) error {
+	key := makeKey(resource.GetName(), typeURL)
+	return handle.db.Update(func(tx *badger.Txn) error {
+		if cont, err := handle.continueWithPutOp(ctx, tx, key, resource); !cont {
+			handle.log.Debugw("not continuing with put op", "error", err)
 			return err
-		}
-
-		// If using the incrementing version scheme, we'll want to conditionally write the new entry.
-		if *incrementingVersionScheme {
-			handle.log.Debugw("reading old value from db", "resource_name", name)
-			valBytes := bucket.Get([]byte(name))
-			existing, err := util.CreateResourceFromBytes(valBytes)
-			if err != nil || util.IsNewerVersion(resource.GetVersion(), existing.GetVersion()) {
-				handle.log.Debugw("put operation did not result in a mutation", "error", err.Error(), "resource_name", name)
-				return err
-			}
 		}
 
 		b, err := proto.Marshal(resource)
@@ -83,29 +110,71 @@ func (handle *dbHandle) Put(resource *discovery.Resource, typeURL string) error 
 			return err
 		}
 
-		err = bucket.Put([]byte(name), b)
-		handle.log.Debugw("write attempt complete", "resource_name", name, "type", resource.GetVersion())
+		err = tx.Set(key, b)
+		if err != nil {
+			handle.log.Errorw("db write failed", "error", err.Error(), "key", string(key))
+			return err
+		}
+
+		handle.log.Debugw("write attempt complete", "key", key)
 		return err
 	})
 }
 
-func (handle *dbHandle) Get(resourceName string, typeURL string) (*discovery.Resource, error) {
+// Pulls a resource from the database by the given name/type. If the key does not exist, an error is
+// returned (badger.ErrKeyNotFound).
+func (handle *dbHandle) Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error) {
 	var res discovery.Resource
+	key := makeKey(resourceName, typeURL)
+	return &res, handle.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(key))
+		if err != nil {
+			return err
+		}
 
-	err := handle.db.View(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket([]byte(typeURL))
-		valBytes := bucket.Get([]byte(resourceName))
+		valBytes, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
 		return proto.Unmarshal(valBytes, &res)
 	})
-
-	return &res, err
 }
 
-func (handle *dbHandle) GetAll(typeURL string) ([]*discovery.Resource, error) {
+// Gets all resources of a given type.
+func (handle *dbHandle) GetAll(ctx context.Context, typeURL string) ([]*discovery.Resource, error) {
+	all := []*discovery.Resource{}
+	prefix := []byte("//" + typeURL + "/")
+
+	handle.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var res discovery.Resource
+				err := proto.Unmarshal(val, &res)
+				if err != nil {
+					handle.log.Errorw("failed to unmarshal item", "error", err.Error())
+					return err
+				}
+
+				all = append(all, &res)
+				return nil
+			})
+
+			if err != nil {
+				handle.log.Errorw("prefix scan failed", "prefix", prefix, "error", err.Error())
+				return err
+			}
+		}
+
+		return nil
+	})
+
 	return nil, nil
-
 }
 
-func (handle *dbHandle) ForEach(fn func(k, v []byte) error, typeURL string) {
+func (handle *dbHandle) ForEach(ctx context.Context, fn func(k, v []byte) error, typeURL string) {
 
 }

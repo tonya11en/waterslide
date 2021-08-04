@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"allen.gg/waterslide/pkg/server/util"
+	"allen.gg/waterslide/internal/util"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
 )
@@ -30,7 +30,7 @@ type Processor struct {
 	resourceStream chan *discovery.Resource
 
 	// TODO: Use a resource ingest interface to abstract away fs watcher from some other resource stream.
-	ingest *Ingester
+	ingest Ingester
 
 	wildcardBroker *util.ResourceBroker
 	ctx            context.Context
@@ -50,5 +50,5 @@ type ProcessorConfig struct {
 	Log            *zap.SugaredLogger
 	TypeURL        string
 	ResourceStream chan *discovery.Resource
-	Ingest         *Ingester
+	Ingest         Ingester
 }

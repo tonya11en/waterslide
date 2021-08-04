@@ -23,6 +23,10 @@ import (
 // Compares the resource versions and decides if the new resource is actually "newer". Note that
 // this is not part of the xDS protocol, the version is just an arbitrary string.
 func IsNewerVersion(new string, existing string) bool {
+	if existing == "" {
+		return true
+	}
+
 	newInt, err := strconv.Atoi(new)
 	if err != nil {
 		panic("bogus resource version error encountered when expecting incrementing version scheme: " + err.Error())
@@ -59,6 +63,7 @@ func GetResourceName(res proto.Message) string {
 	}
 }
 
+// Creates a resource proto from an Any type.
 func CreateResource(anyRes *anypb.Any) (ret discovery.Resource, err error) {
 	// TODO: use a real version.
 	m, err := anyRes.UnmarshalNew()
@@ -73,6 +78,7 @@ func CreateResource(anyRes *anypb.Any) (ret discovery.Resource, err error) {
 	return ret, err
 }
 
+// Creates a resource proto from raw bytes.
 func CreateResourceFromBytes(b []byte) (ret discovery.Resource, err error) {
 	err = proto.Unmarshal(b, &ret)
 	return

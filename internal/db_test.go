@@ -2,32 +2,51 @@ package db
 
 import (
 	"context"
-	"io/ioutil"
-	"os"
 	"testing"
 
+	badger "github.com/dgraph-io/badger/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 )
 
-func initTestfile() string {
-	tmpfile, err := ioutil.TempFile("", "example")
+var (
+	logger *zap.Logger
+	log    *zap.SugaredLogger
+	ctx    context.Context
+)
+
+func init() {
+	var err error
+
+	logger, err = zap.NewDevelopment()
 	if err != nil {
 		panic(err.Error())
 	}
 
-	return tmpfile.Name()
+	log = logger.Sugar()
+
+	ctx = context.Background()
+}
+
+// Makes an in-memory DB for the tests.
+func newTestDatabaseHandle() (DatabaseHandle, error) {
+	var err error
+
+	handle := &dbHandle{
+		ctx: context.Background(),
+		log: log,
+	}
+
+	opts := badger.DefaultOptions("").WithInMemory(true)
+	handle.db, err = badger.Open(opts)
+
+	return handle, err
 }
 
 func TestIncrementingVersionSchemeBehavior(t *testing.T) {
-	filename := initTestfile()
-	defer os.Remove(filename)
-	config := DatabaseHandleConfig{
-		Filepath: filename,
-	}
-
-	handle, err := NewDatabaseHandle(context.Background(), config)
-	assert.NotNil(t, err)
+	handle, err := newTestDatabaseHandle()
+	assert.Nil(t, err)
 
 	turl := "typeurl"
 
@@ -46,31 +65,32 @@ func TestIncrementingVersionSchemeBehavior(t *testing.T) {
 		Version: "2",
 	}
 
-	assert.NotNil(t, handle.Put(&r1, turl))
-	r, err := handle.Get("test_res", turl)
-	assert.NotNil(t, err)
+	assert.Nil(t, handle.Put(ctx, &r1, turl))
+	r, err := handle.Get(ctx, "test_res", turl)
+	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "1", r.GetVersion())
 
-	assert.NotNil(t, handle.Put(&r2, turl))
-	r, err = handle.Get("test_res", turl)
-	assert.NotNil(t, err)
+	// The upgraded resource should successful overwrite r1.
+	assert.Nil(t, handle.Put(ctx, &r2, turl))
+	r, err = handle.Get(ctx, "test_res", turl)
+	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "2", r.GetVersion())
 
-	// By default, the incrementing version scheme is enabled.
-	assert.NotNil(t, handle.Put(&r0, turl))
-	r, err = handle.Get("test_res", turl)
-	assert.NotNil(t, err)
+	// By default, the incrementing version scheme is enabled, so r0 should not overwrite r2.
+	assert.Nil(t, handle.Put(ctx, &r0, turl))
+	r, err = handle.Get(ctx, "test_res", turl)
+	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "2", r.GetVersion())
 
 	// Disable incrementing version scheme.
 	*incrementingVersionScheme = false
 
-	assert.NotNil(t, handle.Put(&r0, turl))
-	r, err = handle.Get("test_res", turl)
-	assert.NotNil(t, err)
+	assert.Nil(t, handle.Put(ctx, &r0, turl))
+	r, err = handle.Get(ctx, "test_res", turl)
+	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "0", r.GetVersion())
 }

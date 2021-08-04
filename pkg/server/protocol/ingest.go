@@ -11,3 +11,9 @@ type Ingester interface {
 	// Begins the task of resource delivery. This should be async.
 	Start(ctx context.Context, ingestStream chan *discovery.Resource)
 }
+
+type NoopIngest struct {
+}
+
+func (n *NoopIngest) Start(ctx context.Context, ingestStream chan *discovery.Resource) {
+}
