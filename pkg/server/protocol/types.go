@@ -12,15 +12,50 @@ import (
 )
 
 type clientState struct {
-	// Tracks the active nonces and the responses sent for them.
-	nonceMap map[string]*discovery.DeltaDiscoveryResponse
+	// Tracks the active nonces for the stream.
+	nonces map[string]struct{}
 
-	// For a particular type URL, we track whether a rq has been encountered. Let's us know if a
-	// request is the first for a particular type.
-	rqReceived map[string]struct{}
+	// Locks the nonce map.
+	nmLock sync.RWMutex
 
 	// Where we receive resources that the client is subscribed to.
 	subCh chan *discovery.Resource
+}
+
+func newClientState() *clientState {
+	return &clientState{
+		nonces: make(map[string]struct{}),
+		subCh:  make(chan *discovery.Resource),
+	}
+}
+
+func (cs *clientState) NonceIsActive(nonce string) bool {
+	cs.nmLock.RLock()
+	defer cs.nmLock.RUnlock()
+	_, ok := cs.nonces[nonce]
+	return ok
+}
+
+func (cs *clientState) SetNonceActive(nonce string) {
+	cs.nmLock.Lock()
+	defer cs.nmLock.Unlock()
+	cs.nonces[nonce] = struct{}{}
+}
+
+// The channel that streams the xDS resources a client is subscribed to.
+func (cs *clientState) SubscriberStream() chan *discovery.Resource {
+	return cs.subCh
+}
+
+// Maps the stream object to
+type ClientStateMapping struct {
+	cmap sync.Map
+}
+
+// Returns the state associated with a stream. Creates it if non-existent.
+func (csm *ClientStateMapping) GetState(stream ClientStream) *clientState {
+	val, _ := csm.cmap.LoadOrStore(stream, newClientState())
+	return val.(*clientState)
 }
 
 // The processor stores the state of the delta xDS protocol for a single resource type.
@@ -37,13 +72,7 @@ type Processor struct {
 	ctx            context.Context
 	log            *zap.SugaredLogger
 	typeURL        string
-
-	clientStateMap map[ClientStream]clientState
-}
-
-type resourceBundle struct {
-	resource *discovery.Resource
-	broker   *util.ResourceBroker
+	clientStateMap ClientStateMapping
 }
 
 type ProcessorConfig struct {

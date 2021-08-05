@@ -18,7 +18,6 @@ func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 		log:            config.Log,
 		ingest:         config.Ingest,
 		resourceStream: config.ResourceStream,
-		clientStateMap: make(map[ClientStream]clientState),
 		typeURL:        config.TypeURL,
 		dbhandle:       config.DBHandle,
 	}
@@ -41,27 +40,6 @@ func makeClientState() clientState {
 	}
 }
 
-func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle, error) {
-	var bundle resourceBundle
-	var err error
-
-	bundle.resource = res
-	bundle.broker = util.NewResourceBroker(p.ctx, p.log)
-	if err != nil {
-		p.log.Errorw("error creating resource bundle", "resource", res.String(), "error", err.Error())
-		return nil, err
-	}
-
-	bundle.broker.Start()
-
-	// For each new broker, we want the wildcard broker to get all resources it publishes. This plugs
-	// the output of the broker into the publisher of the wildcard broker, resulting in the wildcard
-	// broker publishing any time an individual resource publishes.
-	bundle.broker.Subscribe(p.wildcardBroker.PublisherChannel())
-
-	return &bundle, nil
-}
-
 func (p *Processor) doResourceIngest(res *discovery.Resource) {
 	b, loaded := p.brokerMap.LoadOrStore(res.GetName(), util.NewResourceBroker(p.ctx, p.log))
 	if !loaded {
@@ -69,6 +47,10 @@ func (p *Processor) doResourceIngest(res *discovery.Resource) {
 		if err != nil {
 			p.log.Fatal(err.Error())
 		}
+		// For each new broker, we want the wildcard broker to get all resources it publishes. This plugs
+		// the output of the broker into the publisher of the wildcard broker, resulting in the wildcard
+		// broker publishing any time an individual resource publishes.
+		b.(*util.ResourceBroker).Subscribe(p.wildcardBroker.PublisherChannel())
 	}
 	b.(*util.ResourceBroker).Publish(res)
 }
@@ -92,30 +74,19 @@ func (p *Processor) doWildcardSubscription(ctx context.Context, subCh chan *disc
 	}, p.typeURL)
 }
 
+func isWildcardSubscriptionRequest(ddr *discovery.DeltaDiscoveryRequest) bool {
+	return (len(ddr.GetResourceNamesSubscribe()) == 0 && len(ddr.GetResourceNamesUnsubscribe()) == 0) || 
+	(len(ddr.GetResourceNamesSubscribe()) > 0 && ddr.GetResourceNamesSubscribe()[0] == "*")
+}
+
 func (p *Processor) ProcessDeltaDiscoveryRequest(
 	ctx context.Context, ddr *discovery.DeltaDiscoveryRequest, stream ClientStream, send chan *discovery.DeltaDiscoveryResponse) {
 
-	p.log.Info("processing initial delta discovery request")
-
-	// TODO: Support aliases, not just the resource name.
-
-	state, ok := p.clientStateMap[stream]
-	if !ok {
-		p.clientStateMap[stream] = makeClientState()
-		p.processResponses(ctx, stream, state.subCh, send)
-	}
-
-	_, first := state.rqReceived[ddr.GetTypeUrl()]
-	if first {
-		p.log.Infow("encountered first request of type", "type", ddr.GetTypeUrl(), "discovery_request", ddr.String())
-	}
-
 	// Handle responses to previous requests.
 	if isAck(ddr) || isNack(ddr) {
-		if isNack(ddr) {
-			p.log.Errorw("client ACK/NACK received", "nonce", ddr.GetResponseNonce(), "error_detail", ddr.GetErrorDetail())
-		}
-		if _, ok := state.nonceMap[ddr.GetResponseNonce()]; !ok {
+		p.log.Errorw("client ACK/NACK received", "nonce", ddr.GetResponseNonce(), "error_detail", ddr.GetErrorDetail())
+
+		if  {
 			p.log.Errorw("bogus nonce received", "nonce", ddr.GetResponseNonce())
 		}
 		delete(state.nonceMap, ddr.GetResponseNonce())
@@ -158,6 +129,8 @@ func (p *Processor) ProcessDeltaDiscoveryResponse(
 	if !ok {
 		p.log.Fatalw("client state not found", "delta_discovery_response", ddr.String())
 	}
+
+	// @tallen it's all broken. implement the protocol.
 
 	nonce := util.MakeRandomNonce()
 	state.nonceMap[nonce] = ddr
