@@ -1,7 +1,9 @@
 package util
 
 import (
+	"context"
 	"fmt"
+	"sync"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -10,33 +12,31 @@ import (
 // Ripped everything off from:
 // https://stackoverflow.com/questions/36417199/how-to-broadcast-message-using-channel
 
-type resourceSet map[chan *discovery.Resource]struct{}
-
 type ResourceBroker struct {
 	publishCh chan *discovery.Resource
 	subCh     chan chan *discovery.Resource
 	unsubCh   chan chan *discovery.Resource
-	done      chan struct{}
-	subs      resourceSet
+	ctx       context.Context
+	stop      chan struct{}
+	subs      sync.Map
 	running   bool
 
 	log *zap.SugaredLogger
 }
 
-func NewResourceBroker(log *zap.SugaredLogger) *ResourceBroker {
+func NewResourceBroker(ctx context.Context, log *zap.SugaredLogger) *ResourceBroker {
 	if log == nil {
 		panic("invalid logger")
 	}
 
 	return &ResourceBroker{
-		done:      make(chan struct{}),
-		publishCh: make(chan *discovery.Resource, 4),
+		publishCh: make(chan *discovery.Resource),
 		subCh:     make(chan chan *discovery.Resource),
 		unsubCh:   make(chan chan *discovery.Resource),
-
-		subs:    make(resourceSet),
-		log:     log,
-		running: false,
+		ctx:       ctx,
+		stop:      make(chan struct{}),
+		log:       log,
+		running:   false,
 	}
 }
 
@@ -46,31 +46,57 @@ func (b *ResourceBroker) Start() error {
 	}
 	b.running = true
 
-	go func() {
-		for {
-			select {
-			case <-b.done:
-				// Termination condition.
-				b.running = false
-				b.log.Info("terminating broker")
-				return
-			// Subscribe.
-			case msgCh := <-b.subCh:
-				b.subs[msgCh] = struct{}{}
-			// Unsubscribe.
-			case msgCh := <-b.unsubCh:
-				delete(b.subs, msgCh)
-			// Publish the resource out to subscribers.
-			case msg := <-b.publishCh:
-				for msgCh := range b.subs {
-					// TODO: Could potentially hang here.
-					msgCh <- msg
-				}
-			}
-		}
-	}()
+	go b.work()
 
 	return nil
+}
+
+func (b *ResourceBroker) work() {
+	for {
+		select {
+		case <-b.stop:
+			b.running = false
+			b.log.Info("stopping broker")
+			return
+
+		case <-b.ctx.Done():
+			// Termination condition.
+			b.running = false
+			b.log.Info("terminating broker")
+			return
+
+		// Subscribe.
+		case msgCh := <-b.subCh:
+			go func() {
+				b.subs.Store(msgCh, struct{}{})
+			}()
+
+		// Unsubscribe.
+		case msgCh := <-b.unsubCh:
+			go func() {
+				b.subs.Delete(msgCh)
+			}()
+
+		// Publish the resource out to subscribers.
+		case msg := <-b.publishCh:
+			go func() {
+				b.subs.Range(func(msgCh interface{}, _ interface{}) bool {
+					b.deliverMessage(b.ctx, msg, msgCh.(chan *discovery.Resource), nil)
+					return true
+				})
+			}()
+		}
+	}
+}
+
+func (b *ResourceBroker) deliverMessage(c context.Context, msg *discovery.Resource, msgCh chan *discovery.Resource, wg *sync.WaitGroup) {
+	go func() {
+		select {
+		case msgCh <- msg:
+		case <-c.Done():
+			b.log.Errorw("message delivery timed out")
+		}
+	}()
 }
 
 func (b *ResourceBroker) Subscribe(msgCh chan *discovery.Resource) {
@@ -107,5 +133,5 @@ func (b *ResourceBroker) Stop() {
 	}
 
 	b.log.Info("stopping resource broker")
-	b.done <- struct{}{}
+	b.stop <- struct{}{}
 }

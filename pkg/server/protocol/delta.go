@@ -10,7 +10,7 @@ import (
 )
 
 func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
-	broker := util.NewResourceBroker(config.Log)
+	broker := util.NewResourceBroker(config.Ctx, config.Log)
 
 	p := &Processor{
 		ctx:            config.Ctx,
@@ -46,7 +46,7 @@ func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle,
 	var err error
 
 	bundle.resource = res
-	bundle.broker = util.NewResourceBroker(p.log)
+	bundle.broker = util.NewResourceBroker(p.ctx, p.log)
 	if err != nil {
 		p.log.Errorw("error creating resource bundle", "resource", res.String(), "error", err.Error())
 		return nil, err
@@ -61,7 +61,7 @@ func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle,
 }
 
 func (p *Processor) doResourceIngest(res *discovery.Resource) {
-	b, loaded := p.brokerMap.LoadOrStore(res.GetName(), util.NewResourceBroker(p.log))
+	b, loaded := p.brokerMap.LoadOrStore(res.GetName(), util.NewResourceBroker(p.ctx, p.log))
 	if !loaded {
 		err := b.(*util.ResourceBroker).Start()
 		if err != nil {
