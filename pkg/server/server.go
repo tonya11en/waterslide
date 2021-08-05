@@ -129,7 +129,6 @@ func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscovery
 			srv.log.Errorw("returning error before closing client conn", "error", err.Error())
 			return err
 		default:
-			srv.log.Info("@tallen no value received!!")
 		}
 
 		ddr, err := stream.Recv()
@@ -194,7 +193,6 @@ func (srv *server) clientConnection(
 			if err != nil {
 				srv.log.Errorw("error sending response", "error", err.Error())
 				errchan <- err
-				srv.log.Errorw("@tallen err chan")
 				return
 			}
 

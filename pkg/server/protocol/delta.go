@@ -54,7 +54,9 @@ func (p *Processor) newResourceBundle(res *discovery.Resource) (*resourceBundle,
 
 	bundle.broker.Start()
 
-	// For each new broker, we want the wildcard broker to get all resources it publishes.
+	// For each new broker, we want the wildcard broker to get all resources it publishes. This plugs
+	// the output of the broker into the publisher of the wildcard broker, resulting in the wildcard
+	// broker publishing any time an individual resource publishes.
 	bundle.broker.Subscribe(p.wildcardBroker.PublisherChannel())
 
 	return &bundle, nil

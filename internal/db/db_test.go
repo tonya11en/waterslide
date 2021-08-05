@@ -102,7 +102,7 @@ func TestPrefixScan(t *testing.T) {
 
 	turl := "typeurl"
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10; i++ {
 		x := strconv.Itoa(i)
 		err := handle.Put(ctx, &discovery.Resource{
 			Name:    "test_res_" + x,
@@ -117,5 +117,5 @@ func TestPrefixScan(t *testing.T) {
 
 	all, err = handle.GetAll(ctx, turl)
 	assert.Nil(t, err)
-	assert.Equal(t, 1000, len(all))
+	assert.Equal(t, 10, len(all))
 }

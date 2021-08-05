@@ -56,47 +56,38 @@ func (b *ResourceBroker) work() {
 		select {
 		case <-b.stop:
 			b.running = false
-			b.log.Info("stopping broker")
+			b.log.Info("stopping resource broker")
 			return
 
 		case <-b.ctx.Done():
 			// Termination condition.
 			b.running = false
-			b.log.Info("terminating broker")
+			b.log.Info("terminating resource broker")
 			return
 
 		// Subscribe.
 		case msgCh := <-b.subCh:
-			go func() {
-				b.subs.Store(msgCh, struct{}{})
-			}()
+			b.subs.Store(msgCh, struct{}{})
 
 		// Unsubscribe.
 		case msgCh := <-b.unsubCh:
-			go func() {
-				b.subs.Delete(msgCh)
-			}()
+			b.subs.Delete(msgCh)
 
 		// Publish the resource out to subscribers.
 		case msg := <-b.publishCh:
 			go func() {
 				b.subs.Range(func(msgCh interface{}, _ interface{}) bool {
-					b.deliverMessage(b.ctx, msg, msgCh.(chan *discovery.Resource), nil)
+					select {
+					case msgCh.(chan *discovery.Resource) <- msg:
+					case <-b.ctx.Done():
+						// Halts iteration.
+						return false
+					}
 					return true
 				})
 			}()
 		}
 	}
-}
-
-func (b *ResourceBroker) deliverMessage(c context.Context, msg *discovery.Resource, msgCh chan *discovery.Resource, wg *sync.WaitGroup) {
-	go func() {
-		select {
-		case msgCh <- msg:
-		case <-c.Done():
-			b.log.Errorw("message delivery timed out")
-		}
-	}()
 }
 
 func (b *ResourceBroker) Subscribe(msgCh chan *discovery.Resource) {
@@ -132,6 +123,5 @@ func (b *ResourceBroker) Stop() {
 		b.log.Fatal("broker is not started")
 	}
 
-	b.log.Info("stopping resource broker")
 	b.stop <- struct{}{}
 }

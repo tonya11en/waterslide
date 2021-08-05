@@ -2,11 +2,13 @@ package util
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"go.uber.org/zap"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"github.com/stretchr/testify/assert"
 )
 
 var log *zap.SugaredLogger
@@ -18,8 +20,6 @@ func init() {
 		panic(err.Error())
 	}
 }
-
-/*
 
 func TestSubscribe(t *testing.T) {
 	broker := NewResourceBroker(context.TODO(), log)
@@ -136,7 +136,7 @@ func TestDoubleStart(t *testing.T) {
 
 	assert.NotNil(t, broker.Start())
 }
-*/
+
 func broadcastRunner(i int, b *testing.B) {
 	broker := NewResourceBroker(context.TODO(), log)
 	broker.Start()
