@@ -126,13 +126,14 @@ func (handle *dbHandle) Put(ctx context.Context, resource *discovery.Resource, t
 	})
 }
 
-// Pulls a resource from the database by the given name/type. If the key does not exist, an error is
-// returned (badger.ErrKeyNotFound).
+// Pulls a resource from the database by the given name/type. If the key does not exist, nil resource is returned.
 func (handle *dbHandle) Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error) {
 	var res discovery.Resource
 	key := makeKey(resourceName, typeURL)
-	return &res, handle.db.View(func(txn *badger.Txn) error {
+
+	err := handle.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
+		handle.log.Debugw("starting GET transaction", "key", key, "item", item, "error", err)
 		if err != nil {
 			return err
 		}
@@ -141,8 +142,14 @@ func (handle *dbHandle) Get(ctx context.Context, resourceName string, typeURL st
 		if err != nil {
 			return err
 		}
+
 		return proto.Unmarshal(valBytes, &res)
 	})
+
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
+	}
+	return &res, err
 }
 
 // Gets all resources of a given type.

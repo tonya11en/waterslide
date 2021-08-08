@@ -19,12 +19,13 @@ import (
 
 // An xDS delta protocol server.
 type server struct {
-	ctx               context.Context
-	listenerProcessor *protocol.Processor
-	clusterProcessor  *protocol.Processor
-	routeProcessor    *protocol.Processor
-	endpointProcessor *protocol.Processor
-	log               *zap.SugaredLogger
+	ctx                  context.Context
+	listenerProcessor    *protocol.Processor
+	clusterProcessor     *protocol.Processor
+	routeProcessor       *protocol.Processor
+	endpointProcessor    *protocol.Processor
+	scopedRouteProcessor *protocol.Processor
+	log                  *zap.SugaredLogger
 }
 
 // Creates a new server. If the DB filepath is empty, it will make an in-memory DB.
@@ -69,6 +70,12 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, dbFilepath string) *
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
+	config.TypeURL = util.ScopedRouteTypeUrl
+	srp, err := protocol.NewDeltaDiscoveryProcessor(config)
+	if err != nil {
+		log.Fatal("unable to create delta discovery processor", "error", err)
+	}
+
 	config.TypeURL = util.EndpointTypeUrl
 	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
@@ -76,12 +83,13 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, dbFilepath string) *
 	}
 
 	return &server{
-		ctx:               ctx,
-		listenerProcessor: lp,
-		clusterProcessor:  cp,
-		routeProcessor:    rp,
-		endpointProcessor: ep,
-		log:               log,
+		ctx:                  ctx,
+		listenerProcessor:    lp,
+		clusterProcessor:     cp,
+		routeProcessor:       rp,
+		scopedRouteProcessor: srp,
+		endpointProcessor:    ep,
+		log:                  log,
 	}
 }
 
@@ -107,6 +115,8 @@ func (srv *server) getProcessor(typeURL string) (*protocol.Processor, error) {
 		return srv.listenerProcessor, nil
 	case util.EndpointTypeUrl:
 		return srv.endpointProcessor, nil
+	case util.ScopedRouteTypeUrl:
+		return srv.scopedRouteProcessor, nil
 	case util.RouteTypeUrl:
 		return srv.routeProcessor, nil
 	default:
@@ -161,6 +171,7 @@ func (srv *server) clientConnection(
 
 	defer srv.log.Errorw("closing client connection")
 
+	s := protocol.NewClientStream(&stream, send)
 	for {
 		select {
 		// Request received.
@@ -178,23 +189,11 @@ func (srv *server) clientConnection(
 				continue
 			}
 
-			p.ProcessDeltaDiscoveryRequest(srv.ctx, ddrq, &stream, send)
+			p.ProcessDeltaDiscoveryRequest(srv.ctx, ddrq, s)
 
 		// Response pending.
 		case ddrsp := <-send:
-			p, err := srv.getProcessor(ddrsp.GetTypeUrl())
-			if err != nil {
-				srv.log.Errorw("sending empty response for bogus typeURL", "typeURL", ddrsp.GetTypeUrl())
-				stream.Send(ddrsp)
-				continue
-			}
-
-			err = p.ProcessDeltaDiscoveryResponse(srv.ctx, ddrsp, &stream)
-			if err != nil {
-				srv.log.Errorw("error sending response", "error", err.Error())
-				errchan <- err
-				return
-			}
+			stream.Send(ddrsp)
 
 		case <-srv.ctx.Done():
 			return

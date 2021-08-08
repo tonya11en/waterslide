@@ -25,6 +25,9 @@ type ResourceBroker struct {
 }
 
 func NewResourceBroker(ctx context.Context, log *zap.SugaredLogger) *ResourceBroker {
+	// TODO: If the resource broker has no subscriptions for some amount of time, have it
+	// automatically destroy itself. This will prevent floods of bogus resource names that can cause
+	// some resource broker leak.
 	if log == nil {
 		panic("invalid logger")
 	}
@@ -124,4 +127,20 @@ func (b *ResourceBroker) Stop() {
 	}
 
 	b.stop <- struct{}{}
+}
+
+type BrokerMap struct {
+	brokers sync.Map
+	log     *zap.SugaredLogger
+}
+
+func NewBrokerMap(log *zap.SugaredLogger) *BrokerMap {
+	return &BrokerMap{
+		log: log,
+	}
+}
+
+func (bm *BrokerMap) LoadOrStore(ctx context.Context, name string) (*ResourceBroker, bool) {
+	b, loaded := bm.brokers.LoadOrStore(name, NewResourceBroker(ctx, bm.log))
+	return b.(*ResourceBroker), loaded
 }

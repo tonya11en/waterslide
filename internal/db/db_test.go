@@ -66,8 +66,13 @@ func TestIncrementingVersionSchemeBehavior(t *testing.T) {
 		Version: "2",
 	}
 
+	// Verify no errors when looking for non-existent key.
+	r, err := handle.Get(ctx, "wo0o0o0", turl)
+	assert.Nil(t, err)
+	assert.Nil(t, r)
+
 	assert.Nil(t, handle.Put(ctx, &r1, turl))
-	r, err := handle.Get(ctx, "test_res", turl)
+	r, err = handle.Get(ctx, "test_res", turl)
 	assert.Nil(t, err)
 	assert.Equal(t, "test_res", r.GetName())
 	assert.Equal(t, "1", r.GetVersion())
