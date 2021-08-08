@@ -5,6 +5,7 @@ import (
 	"flag"
 	"net"
 
+	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/pkg/server"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -26,8 +27,18 @@ func main() {
 
 	ctx := context.Background()
 
+	log.Info("creating database handle")
+	handleConfig := db.DatabaseHandleConfig{
+		Filepath: *dbFilepath,
+		Log:      log,
+	}
+	handle, err := db.NewDatabaseHandle(ctx, handleConfig)
+	if err != nil {
+		log.Fatalw("failed to initialize database handle", "error", err.Error())
+	}
+
 	log.Info("creating waterslide server")
-	srv := server.NewServer(ctx, log, *dbFilepath)
+	srv := server.NewServer(ctx, log, handle)
 
 	log.Info("creating gRPC server")
 	grpcServer := grpc.NewServer()

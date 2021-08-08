@@ -5,30 +5,51 @@ import (
 	"net"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap"
-
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"allen.gg/waterslide/internal/db"
+	"allen.gg/waterslide/internal/util"
+	"github.com/stretchr/testify/assert"
 )
 
+const bufSize = 1024 * 1024
+
 var lis *bufconn.Listener
-var log *zap.SugaredLogger
 
-func init() {
-	const bufSize = 1024 * 1024
+type testCfg struct {
+	log    *zap.SugaredLogger
+	srv    *server
+	handle db.DatabaseHandle
+}
 
+func setup() *testCfg {
 	l, err := zap.NewDevelopment()
-	log = l.Sugar()
+	log := l.Sugar()
 	if err != nil {
 		panic(err.Error())
 	}
 
+	handleConfig := db.DatabaseHandleConfig{
+		// Empty filepath makes the DB in-memory for the test.
+		Filepath: "",
+		Log:      log,
+	}
+
+	handle, err := db.NewDatabaseHandle(ctx.Background(), handleConfig)
+	if err != nil {
+		log.Fatalw("failed to initialize database handle", "error", err.Error())
+	}
+
 	lis = bufconn.Listen(bufSize)
-	srv := NewServer(ctx.Background(), log, "")
+	srv := NewServer(ctx.Background(), log, handle)
 	s := grpc.NewServer()
 	discovery.RegisterAggregatedDiscoveryServiceServer(s, srv)
 
@@ -38,6 +59,57 @@ func init() {
 			log.Fatal(err.Error())
 		}
 	}()
+
+	return &testCfg{
+		log:    log,
+		srv:    srv,
+		handle: handle,
+	}
+}
+
+func makeAny(res proto.Message) *anypb.Any {
+	ret, err := anypb.New(res)
+	if err != nil {
+		panic(err.Error())
+	}
+	return ret
+}
+
+func populateDB(cfg *testCfg) {
+	// Clusters to populate the DB with.
+	clusterResources := []*discovery.Resource{
+		{
+			Name:    "cluster_1",
+			Version: "1",
+			Resource: makeAny(
+				&cluster.Cluster{
+					Name: "test1_cluster_name",
+				}),
+		},
+		{
+			Name:    "cluster_2",
+			Version: "1",
+			Resource: makeAny(
+				&cluster.Cluster{
+					Name: "test2_cluster_name",
+				}),
+		},
+		{
+			Name:    "cluster_3",
+			Version: "1",
+			Resource: makeAny(
+				&cluster.Cluster{
+					Name: "test3_cluster_name",
+				}),
+		},
+	}
+
+	for _, res := range clusterResources {
+		err := cfg.handle.Put(ctx.Background(), res, util.ClusterTypeUrl)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
 }
 
 func bufDialer(ctx.Context, string) (net.Conn, error) {
@@ -62,6 +134,7 @@ func getBufconn(t *testing.T) *grpc.ClientConn {
 
 // Verify that the SotW wire protocol is not supported and returns an error.
 func TestSotWNotSupported(t *testing.T) {
+	cfg := setup()
 	bc := getBufconn(t)
 	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
 
@@ -69,6 +142,7 @@ func TestSotWNotSupported(t *testing.T) {
 	assert.Nil(t, err)
 
 	req := &discovery.DiscoveryRequest{}
+	cfg.log.Debugw("test")
 	err = stream.Send(req)
 	assert.Nil(t, err)
 
@@ -79,6 +153,7 @@ func TestSotWNotSupported(t *testing.T) {
 }
 
 func TestBogusResourcetype(t *testing.T) {
+	cfg := setup()
 	bc := getBufconn(t)
 	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
 
@@ -89,12 +164,62 @@ func TestBogusResourcetype(t *testing.T) {
 		TypeUrl: "bogus_type_url",
 	}
 
-	log.Infof("sending the bogus request", "req", req.String())
+	cfg.log.Infof("sending the bogus request", "req", req.String())
 	err = stream.Send(req)
-	log.Infof("done sending bogus request")
+	cfg.log.Infof("done sending bogus request")
 	assert.Nil(t, err)
 	ddrsp, err := stream.Recv()
 	assert.Nil(t, err)
 	assert.Equal(t, ddrsp.GetTypeUrl(), "bogus_type_url")
 	assert.Equal(t, len(ddrsp.GetResources()), 0)
+}
+
+func TestResourceSub(t *testing.T) {
+	cfg := setup()
+	bc := getBufconn(t)
+	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
+	stream, err := client.DeltaAggregatedResources(ctx.Background())
+	assert.Nil(t, err)
+
+	populateDB(cfg)
+
+	req := &discovery.DeltaDiscoveryRequest{
+		TypeUrl:                util.ClusterTypeUrl,
+		ResourceNamesSubscribe: []string{"test1", "test2", "test3"},
+	}
+
+	cfg.log.Infow("sending the ddrq", "req", req.String())
+	err = stream.Send(req)
+	cfg.log.Infow("done sending ddrq")
+	assert.Nil(t, err)
+
+	ddrsp, err := stream.Recv()
+	cfg.log.Infow("received response", "response", ddrsp.String())
+	assert.Nil(t, err)
+	assert.Equal(t, ddrsp.GetTypeUrl(), util.ClusterTypeUrl)
+	assert.Equal(t, len(ddrsp.GetResources()), 3)
+}
+
+func TestNonexistentResourceSub(t *testing.T) {
+	cfg := setup()
+	bc := getBufconn(t)
+	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
+	stream, err := client.DeltaAggregatedResources(ctx.Background())
+	assert.Nil(t, err)
+
+	req := &discovery.DeltaDiscoveryRequest{
+		TypeUrl:                util.ClusterTypeUrl,
+		ResourceNamesSubscribe: []string{"test1", "test2", "test3"},
+	}
+
+	cfg.log.Infow("sending the ddrq", "req", req.String())
+	err = stream.Send(req)
+	cfg.log.Infow("done sending ddrq")
+	assert.Nil(t, err)
+
+	ddrsp, err := stream.Recv()
+	cfg.log.Infow("received response", "response", ddrsp.String())
+	assert.Nil(t, err)
+	assert.Equal(t, ddrsp.GetTypeUrl(), util.ClusterTypeUrl)
+	assert.Equal(t, len(ddrsp.GetResources()), 3)
 }

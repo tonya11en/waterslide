@@ -65,12 +65,6 @@ func (cs *clientState) setNonceInactive(nonce string) {
 	delete(cs.nonces, nonce)
 }
 
-func (cs *clientState) setNonceActive(nonce string) {
-	cs.nmLock.Lock()
-	defer cs.nmLock.Unlock()
-	cs.nonces[nonce] = struct{}{}
-}
-
 // The channel that streams the xDS resources a client is subscribed to.
 func (cs *clientState) subscriberStream() chan *discovery.Resource {
 	return cs.subCh
@@ -79,21 +73,28 @@ func (cs *clientState) subscriberStream() chan *discovery.Resource {
 // Maps the stream object to
 type clientStateMapping struct {
 	cmap sync.Map
+	log  *zap.SugaredLogger
 }
 
 // Returns the state associated with a stream. Creates it if non-existent.
-func (csm *clientStateMapping) getState(stream ClientStream) *clientState {
-	val, _ := csm.cmap.LoadOrStore(stream, newClientState(stream.send))
+func (csm *clientStateMapping) getState(ctx context.Context, stream ClientStream, typeURL string) *clientState {
+	val, loaded := csm.cmap.LoadOrStore(stream, newClientState(stream.send))
+	state := val.(*clientState)
+	if !loaded {
+		// Created a new client state, so let's get those responses processing.
+		go csm.processResponses(ctx, csm.log, state.subscriberStream(), state.send, typeURL)
+	}
+
 	return val.(*clientState)
 }
 
 // Fires off discovery responses to the "send" channel.
+// TODO: handle deletes somehow
 func (csm *clientStateMapping) processResponses(
 	ctx context.Context, log *zap.SugaredLogger, ch chan *discovery.Resource, send chan *discovery.DeltaDiscoveryResponse, typeURL string) {
 
-	// TODO: handle deletes
-
 	log.Infow("processing responses for client")
+	defer close(send)
 
 	ticker := time.NewTicker(util.UpdateInterval)
 	resources := []*discovery.Resource{}
@@ -103,9 +104,11 @@ func (csm *clientStateMapping) processResponses(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			log.Debugw("ticker fired", "resources", resources)
 			if len(resources) == 0 {
 				continue
 			}
+
 			log.Infow("sending response")
 			send <- &discovery.DeltaDiscoveryResponse{
 				TypeUrl:   typeURL,
@@ -113,7 +116,10 @@ func (csm *clientStateMapping) processResponses(
 			}
 			resources = []*discovery.Resource{}
 
-		case res := <-ch:
+		case res, more := <-ch:
+			if !more {
+				return
+			}
 			log.Infow("processing a resource", "name", res.GetName())
 			// TODO: dedup by version num and add to res.
 			resources = append(resources, res)

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"time"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -49,6 +50,9 @@ func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 		typeURL:        config.TypeURL,
 		dbhandle:       config.DBHandle,
 		brokers:        util.NewBrokerMap(config.Log),
+		clientStateMap: clientStateMapping{
+			log: config.Log,
+		},
 	}
 
 	p.log.Info("initializing wildcard broker")
@@ -102,6 +106,7 @@ func (p *Processor) doResourceIngest(res *discovery.Resource) {
 }
 
 func (p *Processor) ingestResources() {
+	p.log.Debugw("starting ingest resource stream")
 	for res := range p.resourceStream {
 		p.log.Infow("resource ingested", "resource", res.String())
 		p.doResourceIngest(res)
@@ -143,7 +148,7 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		return fmt.Errorf("received nonsensical request")
 	}
 
-	state := p.clientStateMap.getState(stream)
+	state := p.clientStateMap.getState(ctx, stream, p.typeURL)
 	p.log.Debugw("received delta discovery request",
 		"nonce", ddr.GetResponseNonce(), "is_ack", isAck(ddr), "is_nack", isNack(ddr))
 
@@ -163,8 +168,10 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		}
 
 		if res == nil {
-			p.log.Infow("client subscribing to non-existent resource", "resource", subName)
-			p.sendEmptyResponse(stream, p.typeURL)
+			p.log.Debugw("client subscribing to non-existent resource, sending empty resource", "resource", subName)
+			state.subscriberStream() <- &discovery.Resource{
+				Name: subName,
+			}
 		} else {
 			state.subscriberStream() <- res
 			b := p.getBroker(subName)
@@ -195,9 +202,10 @@ func isNack(ddrq *discovery.DeltaDiscoveryRequest) bool {
 
 func (p *Processor) sendEmptyResponse(stream ClientStream, typeURL string) {
 	go func() {
-		nonce := util.MakeRandomNonce()
-		state := p.clientStateMap.getState(stream)
-		state.setNonceActive(nonce)
+		ctx, cancel := context.WithCancel(p.ctx)
+		defer cancel()
+		state := p.clientStateMap.getState(ctx, stream, p.typeURL)
+		nonce := state.newNonceLifetime(time.Second * 15)
 		stream.send <- &discovery.DeltaDiscoveryResponse{
 			Nonce:   nonce,
 			TypeUrl: typeURL,

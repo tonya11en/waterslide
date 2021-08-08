@@ -29,19 +29,9 @@ type server struct {
 }
 
 // Creates a new server. If the DB filepath is empty, it will make an in-memory DB.
-func NewServer(ctx context.Context, log *zap.SugaredLogger, dbFilepath string) *server {
+func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHandle) *server {
 	if log == nil {
 		panic("passed in nil logger")
-	}
-
-	handleConfig := db.DatabaseHandleConfig{
-		Filepath: dbFilepath,
-		Log:      log,
-	}
-
-	handle, err := db.NewDatabaseHandle(ctx, handleConfig)
-	if err != nil {
-		log.Fatalw("failed to initialize database handle", "error", err.Error())
 	}
 
 	config := protocol.ProcessorConfig{
@@ -157,6 +147,7 @@ func (srv *server) sendEmptyResponse(
 	stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer,
 	send chan *discovery.DeltaDiscoveryResponse, typeURL string) {
 
+	srv.log.Debugw("sending empty response", "type_url", typeURL)
 	go func() {
 		send <- &discovery.DeltaDiscoveryResponse{
 			TypeUrl: typeURL,
