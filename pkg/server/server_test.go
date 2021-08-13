@@ -168,10 +168,8 @@ func TestBogusResourcetype(t *testing.T) {
 	err = stream.Send(req)
 	cfg.log.Infof("done sending bogus request")
 	assert.Nil(t, err)
-	ddrsp, err := stream.Recv()
-	assert.Nil(t, err)
-	assert.Equal(t, ddrsp.GetTypeUrl(), "bogus_type_url")
-	assert.Equal(t, len(ddrsp.GetResources()), 0)
+	_, err = stream.Recv()
+	assert.NotNil(t, err)
 }
 
 func TestResourceSub(t *testing.T) {

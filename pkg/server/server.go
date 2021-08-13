@@ -35,11 +35,10 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 	}
 
 	config := protocol.ProcessorConfig{
-		Ctx:            ctx,
-		Log:            log,
-		ResourceStream: make(chan *discovery.Resource),
-		Ingest:         &protocol.NoopIngest{},
-		DBHandle:       handle,
+		Ctx:      ctx,
+		Log:      log,
+		Ingest:   &protocol.TestIngest{},
+		DBHandle: handle,
 	}
 
 	config.TypeURL = util.ListenerTypeUrl
@@ -117,20 +116,15 @@ func (srv *server) getProcessor(typeURL string) (*protocol.Processor, error) {
 
 // Delta stream handler for ADS server.
 func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer) error {
-	recv := make(chan *discovery.DeltaDiscoveryRequest, 1)
 	send := make(chan *discovery.DeltaDiscoveryResponse, 1)
-	errchan := make(chan error, 1)
+	recv := make(chan *discovery.DeltaDiscoveryRequest, 1)
+	defer close(recv)
 
-	go srv.clientConnection(stream, recv, send, errchan)
+	errchan := make(chan error)
+
+	go srv.clientConnection(stream, send, errchan)
 
 	for {
-		select {
-		case err := <-errchan:
-			srv.log.Errorw("returning error before closing client conn", "error", err.Error())
-			return err
-		default:
-		}
-
 		ddr, err := stream.Recv()
 		if err == io.EOF {
 			// The client message stream has ended.
@@ -139,49 +133,25 @@ func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscovery
 			return err
 		}
 
-		recv <- ddr
-	}
-}
-
-func (srv *server) sendEmptyResponse(
-	stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer,
-	send chan *discovery.DeltaDiscoveryResponse, typeURL string) {
-
-	srv.log.Debugw("sending empty response", "type_url", typeURL)
-	go func() {
-		send <- &discovery.DeltaDiscoveryResponse{
-			TypeUrl: typeURL,
+		p, err := srv.getProcessor(ddr.GetTypeUrl())
+		if err != nil {
+			return err
 		}
-	}()
+
+		s := protocol.NewClientStream(&stream, send)
+		go p.ProcessDeltaDiscoveryRequest(stream.Context(), ddr, s)
+	}
 }
 
 func (srv *server) clientConnection(
 	stream discovery.AggregatedDiscoveryService_DeltaAggregatedResourcesServer,
-	recv chan *discovery.DeltaDiscoveryRequest,
-	send chan *discovery.DeltaDiscoveryResponse, errchan chan error) {
+	send chan *discovery.DeltaDiscoveryResponse,
+	errchan chan error) {
 
 	defer srv.log.Errorw("closing client connection")
 
-	s := protocol.NewClientStream(&stream, send)
 	for {
 		select {
-		// Request received.
-		case ddrq, ok := <-recv:
-			if !ok {
-				return
-			}
-
-			p, err := srv.getProcessor(ddrq.GetTypeUrl())
-			if err != nil {
-				// There was some issue getting the processor for the type, so we'll just send an empty
-				// response back.
-				srv.log.Errorw("scheduling empty response for bogus typeURL", "typeURL", ddrq.GetTypeUrl())
-				srv.sendEmptyResponse(stream, send, ddrq.GetTypeUrl())
-				continue
-			}
-
-			p.ProcessDeltaDiscoveryRequest(srv.ctx, ddrq, s)
-
 		// Response pending.
 		case ddrsp := <-send:
 			stream.Send(ddrsp)

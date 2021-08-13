@@ -5,9 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"allen.gg/waterslide/internal/util"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
+
+	"allen.gg/waterslide/internal/util"
 )
 
 type clientState struct {
@@ -52,13 +53,7 @@ func (cs *clientState) newNonceLifetime(lifetime time.Duration) string {
 	return n
 }
 
-func (cs *clientState) nonceIsActive(nonce string) bool {
-	cs.nmLock.RLock()
-	defer cs.nmLock.RUnlock()
-	_, ok := cs.nonces[nonce]
-	return ok
-}
-
+// Renders the nonce stale.
 func (cs *clientState) setNonceInactive(nonce string) {
 	cs.nmLock.Lock()
 	defer cs.nmLock.Unlock()
@@ -70,7 +65,7 @@ func (cs *clientState) subscriberStream() chan *discovery.Resource {
 	return cs.subCh
 }
 
-// Maps the stream object to
+// Maps the stream object to a client state.
 type clientStateMapping struct {
 	cmap sync.Map
 	log  *zap.SugaredLogger
@@ -82,7 +77,7 @@ func (csm *clientStateMapping) getState(ctx context.Context, stream ClientStream
 	state := val.(*clientState)
 	if !loaded {
 		// Created a new client state, so let's get those responses processing.
-		go csm.processResponses(ctx, csm.log, state.subscriberStream(), state.send, typeURL)
+		go csm.processResponses(ctx, csm.log, state, typeURL)
 	}
 
 	return val.(*clientState)
@@ -91,10 +86,10 @@ func (csm *clientStateMapping) getState(ctx context.Context, stream ClientStream
 // Fires off discovery responses to the "send" channel.
 // TODO: handle deletes somehow
 func (csm *clientStateMapping) processResponses(
-	ctx context.Context, log *zap.SugaredLogger, ch chan *discovery.Resource, send chan *discovery.DeltaDiscoveryResponse, typeURL string) {
+	ctx context.Context, log *zap.SugaredLogger, state *clientState, typeURL string) {
 
 	log.Infow("processing responses for client")
-	defer close(send)
+	defer close(state.send)
 
 	ticker := time.NewTicker(util.UpdateInterval)
 	resources := []*discovery.Resource{}
@@ -110,13 +105,14 @@ func (csm *clientStateMapping) processResponses(
 			}
 
 			log.Infow("sending response")
-			send <- &discovery.DeltaDiscoveryResponse{
+			state.send <- &discovery.DeltaDiscoveryResponse{
 				TypeUrl:   typeURL,
 				Resources: resources,
+				Nonce:     state.newNonceLifetime(30 * time.Second),
 			}
 			resources = []*discovery.Resource{}
 
-		case res, more := <-ch:
+		case res, more := <-state.subscriberStream():
 			if !more {
 				return
 			}

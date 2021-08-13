@@ -29,9 +29,9 @@ func TestSubscribe(t *testing.T) {
 	s1 := make(chan *discovery.Resource, 4)
 	s2 := make(chan *discovery.Resource, 4)
 	s3 := make(chan *discovery.Resource, 4)
-	broker.Subscribe(s1)
-	broker.Subscribe(s2)
-	broker.Subscribe(s3)
+	broker.Subscribe(context.TODO(), s1)
+	broker.Subscribe(context.TODO(), s2)
+	broker.Subscribe(context.TODO(), s3)
 
 	rfoo := &discovery.Resource{
 		Name: "foo",
@@ -94,9 +94,9 @@ func TestUnsubscribe(t *testing.T) {
 	s1 := make(chan *discovery.Resource, 4)
 	s2 := make(chan *discovery.Resource, 4)
 	s3 := make(chan *discovery.Resource, 4)
-	broker.Subscribe(s1)
-	broker.Subscribe(s2)
-	broker.Subscribe(s3)
+	broker.Subscribe(context.TODO(), s1)
+	broker.Subscribe(context.TODO(), s2)
+	broker.Subscribe(context.TODO(), s3)
 
 	rfoo := &discovery.Resource{
 		Name: "foo",
@@ -150,7 +150,7 @@ func broadcastRunner(i int, b *testing.B) {
 			}
 		}()
 
-		broker.Subscribe(ch)
+		broker.Subscribe(context.TODO(), ch)
 	}
 
 	b.ResetTimer()

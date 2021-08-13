@@ -93,12 +93,18 @@ func (b *ResourceBroker) work() {
 	}
 }
 
-func (b *ResourceBroker) Subscribe(msgCh chan *discovery.Resource) {
+func (b *ResourceBroker) Subscribe(ctx context.Context, msgCh chan *discovery.Resource) {
 	if !b.running {
 		b.log.Fatal("broker is not started")
 	}
 
 	b.subCh <- msgCh
+
+	go func() {
+		// Cleanup the subscription when done.
+		<-ctx.Done()
+		b.Unsubscribe(msgCh)
+	}()
 }
 
 func (b *ResourceBroker) Unsubscribe(msgCh chan *discovery.Resource) {
@@ -134,13 +140,23 @@ type BrokerMap struct {
 	log     *zap.SugaredLogger
 }
 
+// Looks up a resource broker by name or creates it if it doesn't exist and returns it. Will return
+// true if a resource broker was loaded and not created. False is returned if a resource broker is newly created.
+//
+// Note that a newly created resource broker is only created and not started.
 func NewBrokerMap(log *zap.SugaredLogger) *BrokerMap {
 	return &BrokerMap{
 		log: log,
 	}
 }
 
-func (bm *BrokerMap) LoadOrStore(ctx context.Context, name string) (*ResourceBroker, bool) {
-	b, loaded := bm.brokers.LoadOrStore(name, NewResourceBroker(ctx, bm.log))
+func (bm *BrokerMap) LoadOrStore(ctx context.Context, resourceName string) (*ResourceBroker, bool) {
+	b, loaded := bm.brokers.LoadOrStore(resourceName, NewResourceBroker(ctx, bm.log))
 	return b.(*ResourceBroker), loaded
+}
+
+func (bm *BrokerMap) Range(f func(resourceName string, broker *ResourceBroker) bool) {
+	bm.brokers.Range(func(key, val interface{}) bool {
+		return f(key.(string), val.(*ResourceBroker))
+	})
 }

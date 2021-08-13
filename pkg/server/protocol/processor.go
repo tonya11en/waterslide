@@ -2,8 +2,6 @@ package protocol
 
 import (
 	"context"
-	"fmt"
-	"time"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -14,7 +12,8 @@ import (
 
 // The processor handles discovery requests and tracks the state associated with each client stream.
 type Processor struct {
-	brokers *util.BrokerMap
+	brokers        *util.BrokerMap
+	wildcardBroker *util.ResourceBroker
 
 	// Incoming resource updates.
 	resourceStream chan *discovery.Resource
@@ -25,7 +24,6 @@ type Processor struct {
 	// stream.
 	ingest Ingester
 
-	wildcardBroker *util.ResourceBroker
 	ctx            context.Context
 	log            *zap.SugaredLogger
 	typeURL        string
@@ -33,23 +31,21 @@ type Processor struct {
 }
 
 type ProcessorConfig struct {
-	Ctx            context.Context
-	Log            *zap.SugaredLogger
-	TypeURL        string
-	ResourceStream chan *discovery.Resource
-	Ingest         Ingester
-	DBHandle       db.DatabaseHandle
+	Ctx      context.Context
+	Log      *zap.SugaredLogger
+	TypeURL  string
+	Ingest   Ingester
+	DBHandle db.DatabaseHandle
 }
 
 func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 	p := &Processor{
-		ctx:            config.Ctx,
-		log:            config.Log,
-		ingest:         config.Ingest,
-		resourceStream: config.ResourceStream,
-		typeURL:        config.TypeURL,
-		dbhandle:       config.DBHandle,
-		brokers:        util.NewBrokerMap(config.Log),
+		ctx:      config.Ctx,
+		log:      config.Log,
+		ingest:   config.Ingest,
+		typeURL:  config.TypeURL,
+		dbhandle: config.DBHandle,
+		brokers:  util.NewBrokerMap(config.Log),
 		clientStateMap: clientStateMapping{
 			log: config.Log,
 		},
@@ -62,6 +58,8 @@ func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 	}
 
 	// Deal with the incoming resource stream.
+	p.ingest.Start()
+	p.resourceStream = p.ingest.ResourceStream()
 	go p.ingestResources()
 
 	return p, nil
@@ -91,31 +89,28 @@ func (p *Processor) getBroker(name string) *util.ResourceBroker {
 		// For each new broker, we want the wildcard broker to get all resources it publishes. This plugs
 		// the output of the broker into the publisher of the wildcard broker, resulting in the wildcard
 		// broker publishing any time an individual resource publishes.
-		b.Subscribe(p.wildcardBroker.PublisherChannel())
+		b.Subscribe(p.ctx, p.wildcardBroker.PublisherChannel())
 	}
 	return b
 }
 
-func (p *Processor) doResourceIngest(res *discovery.Resource) {
-	if p.typeURL != res.Resource.GetTypeUrl() {
-		p.log.Fatalf("received %s resource on processor for %s\n", res.Resource.GetTypeUrl(), p.typeURL)
-	}
-	b := p.getBroker(res.GetName())
-	p.dbhandle.Put(p.ctx, res, p.typeURL)
-	b.Publish(res)
-}
-
+// Consumes from the inbound resource stream.
 func (p *Processor) ingestResources() {
 	p.log.Debugw("starting ingest resource stream")
 	for res := range p.resourceStream {
 		p.log.Infow("resource ingested", "resource", res.String())
-		p.doResourceIngest(res)
+		if p.typeURL != res.Resource.GetTypeUrl() {
+			p.log.Fatalf("received %s resource on processor for %s\n", res.Resource.GetTypeUrl(), p.typeURL)
+		}
+		b := p.getBroker(res.GetName())
+		p.dbhandle.Put(p.ctx, res, p.typeURL)
+		b.Publish(res)
 	}
 }
 
 // Plugs a wildcard subscription into the provided channel meant to feed resources to a subscriber.
-func (p *Processor) doWildcardSubscription(subCh chan *discovery.Resource) {
-	p.wildcardBroker.Subscribe(subCh)
+func (p *Processor) doWildcardSubscription(ctx context.Context, subCh chan *discovery.Resource) {
+	p.wildcardBroker.Subscribe(ctx, subCh)
 	p.log.Info("subscribed to wildcard broker")
 
 	// Give the subscriber all of the current resources.
@@ -125,28 +120,10 @@ func (p *Processor) doWildcardSubscription(subCh chan *discovery.Resource) {
 	}, p.typeURL)
 }
 
-func isWildcardSubscriptionRequest(ddr *discovery.DeltaDiscoveryRequest) bool {
-	return (len(ddr.GetResourceNamesSubscribe()) > 0 && ddr.GetResourceNamesSubscribe()[0] == "*")
-}
-
-func (p *Processor) isValidRequest(ddr *discovery.DeltaDiscoveryRequest) bool {
-	if isWildcardSubscriptionRequest(ddr) && len(ddr.GetResourceNamesUnsubscribe()) > 0 {
-		p.log.Warnw("received invalid request", "reason", "wildcard subscription included with individual resource sub")
-		return false
-	}
-
-	return true
-}
-
 func (p *Processor) ProcessDeltaDiscoveryRequest(
 	ctx context.Context,
 	ddr *discovery.DeltaDiscoveryRequest,
-	stream ClientStream) error {
-
-	// Error out if the request does not conform to the protocol.
-	if !p.isValidRequest(ddr) {
-		return fmt.Errorf("received nonsensical request")
-	}
+	stream ClientStream) {
 
 	state := p.clientStateMap.getState(ctx, stream, p.typeURL)
 	p.log.Debugw("received delta discovery request",
@@ -157,7 +134,7 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		p.log.Debugw("client subscribing to resource", "resource", subName)
 
 		if subName == "*" {
-			p.doWildcardSubscription(state.subscriberStream())
+			p.doWildcardSubscription(ctx, state.subscriberStream())
 			continue
 		}
 
@@ -175,7 +152,7 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		} else {
 			state.subscriberStream() <- res
 			b := p.getBroker(subName)
-			b.Subscribe(state.subscriberStream())
+			b.Subscribe(ctx, state.subscriberStream())
 		}
 	}
 
@@ -189,7 +166,14 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 	nonce := ddr.GetResponseNonce()
 
 	state.setNonceInactive(nonce)
-	return nil
+}
+
+func (p *Processor) CleanupSubscriptions(msgCh chan *discovery.Resource) {
+	p.wildcardBroker.Unsubscribe(msgCh)
+	p.brokers.Range(func(_ string, broker *util.ResourceBroker) bool {
+		broker.Unsubscribe(msgCh)
+		return true
+	})
 }
 
 func isAck(ddrq *discovery.DeltaDiscoveryRequest) bool {
@@ -198,17 +182,4 @@ func isAck(ddrq *discovery.DeltaDiscoveryRequest) bool {
 
 func isNack(ddrq *discovery.DeltaDiscoveryRequest) bool {
 	return len(ddrq.GetResponseNonce()) > 0 && ddrq.GetErrorDetail() != nil
-}
-
-func (p *Processor) sendEmptyResponse(stream ClientStream, typeURL string) {
-	go func() {
-		ctx, cancel := context.WithCancel(p.ctx)
-		defer cancel()
-		state := p.clientStateMap.getState(ctx, stream, p.typeURL)
-		nonce := state.newNonceLifetime(time.Second * 15)
-		stream.send <- &discovery.DeltaDiscoveryResponse{
-			Nonce:   nonce,
-			TypeUrl: typeURL,
-		}
-	}()
 }
