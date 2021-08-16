@@ -15,9 +15,10 @@ import (
 	auth "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	runtime "github.com/envoyproxy/go-control-plane/envoy/service/runtime/v3"
-
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+
+	"allen.gg/waterslide/internal/db/flatbuffers/waterslide_bufs"
 )
 
 // Compares the resource versions and decides if the new resource is actually "newer". Note that
@@ -38,6 +39,13 @@ func IsNewerVersion(new string, existing string) bool {
 	}
 
 	return newInt > existingInt
+}
+
+// Unmarshals a resource proto from a flatbuffer resource.
+func ResourceProtoFromFlat(fbuf *waterslide_bufs.Resource) (*discovery.Resource, error) {
+	var res discovery.Resource
+	err := proto.Unmarshal(fbuf.ResourceProto(), &res)
+	return &res, err
 }
 
 // GetResourceName returns the resource name for a valid xDS response type.

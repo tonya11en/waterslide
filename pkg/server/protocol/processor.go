@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"strconv"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -10,13 +11,14 @@ import (
 	"allen.gg/waterslide/internal/util"
 )
 
+const (
+	commonNamespace = "namspace"
+)
+
 // The processor handles discovery requests and tracks the state associated with each client stream.
 type Processor struct {
 	brokers        *util.BrokerMap
 	wildcardBroker *util.ResourceBroker
-
-	// Incoming resource updates.
-	resourceStream chan *discovery.Resource
 
 	dbhandle db.DatabaseHandle
 
@@ -58,8 +60,6 @@ func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 	}
 
 	// Deal with the incoming resource stream.
-	p.ingest.Start()
-	p.resourceStream = p.ingest.ResourceStream()
 	go p.ingestResources()
 
 	return p, nil
@@ -97,14 +97,43 @@ func (p *Processor) getBroker(name string) *util.ResourceBroker {
 // Consumes from the inbound resource stream.
 func (p *Processor) ingestResources() {
 	p.log.Debugw("starting ingest resource stream")
-	for res := range p.resourceStream {
-		p.log.Infow("resource ingested", "resource", res.String())
-		if p.typeURL != res.Resource.GetTypeUrl() {
-			p.log.Fatalf("received %s resource on processor for %s\n", res.Resource.GetTypeUrl(), p.typeURL)
-		}
-		b := p.getBroker(res.GetName())
-		p.dbhandle.Put(p.ctx, res, p.typeURL)
-		b.Publish(res)
+	p.ingest.Start()
+	for res := range p.ingest.ResourceStream() {
+		go func(r *discovery.Resource) {
+			p.log.Infow("resource ingested", "resource", r.String())
+			if p.typeURL != r.Resource.GetTypeUrl() {
+				p.log.Fatalw("received resource on the wrong processor",
+					"processor_type", p.typeURL,
+					"resource_type", r.Resource.GetTypeUrl())
+			}
+			b := p.getBroker(r.GetName())
+			gsn, err := p.dbhandle.ConditionalPut(p.ctx, commonNamespace, p.typeURL, r, func(oldVersion string) bool {
+				// Only PUT if this is a newer resource version.
+				old, err := strconv.Atoi(oldVersion)
+				if err != nil {
+					p.log.Fatalw("unable to convert existing DB entry version to integer",
+						"problem_string", oldVersion,
+						"error", err.Error())
+				}
+
+				new, err := strconv.Atoi(r.GetVersion())
+				if err != nil {
+					p.log.Errorw("new resource's version cannot be converted to integer",
+						"version", r.GetVersion(),
+						"error", err.Error(),
+						"resource", r.String())
+					return false
+				}
+				return new > old
+			})
+			if err != nil {
+				p.log.Fatalw("failed to ingest resource to DB", "error", err.Error())
+			}
+			if gsn > 0 {
+				// If the conditional write was successful, we'll publish the resource.
+				b.Publish(r)
+			}
+		}(res)
 	}
 }
 
@@ -114,10 +143,17 @@ func (p *Processor) doWildcardSubscription(ctx context.Context, subCh chan *disc
 	p.log.Info("subscribed to wildcard broker")
 
 	// Give the subscriber all of the current resources.
-	p.dbhandle.ForEach(p.ctx, func(res *discovery.Resource) {
-		p.log.Infow("adding resource to sub channel", "name", res.GetName())
+	all, err := p.dbhandle.GetAll(ctx, commonNamespace, p.typeURL)
+	if err != nil {
+		p.log.Fatalw("error performing DB scan", "error", err.Error())
+	}
+	for _, fb := range all {
+		res, err := util.ResourceProtoFromFlat(fb)
+		if err != nil {
+			p.log.Fatalw("unable to create resource proto from DB entry", "error", err.Error())
+		}
 		subCh <- res
-	}, p.typeURL)
+	}
 }
 
 func (p *Processor) ProcessDeltaDiscoveryRequest(
@@ -139,7 +175,7 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		}
 
 		// Lookup the specific resource.
-		res, err := p.dbhandle.Get(p.ctx, subName, p.typeURL)
+		res, err := p.dbhandle.Get(p.ctx, commonNamespace, p.typeURL, subName)
 		if err != nil {
 			p.log.Warnw("lookup failed for resource", "resource_name", subName, "error", err.Error())
 		}
@@ -150,7 +186,12 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 				Name: subName,
 			}
 		} else {
-			state.subscriberStream() <- res
+			resProto, err := util.ResourceProtoFromFlat(res)
+			if err != nil {
+				p.log.Fatalw("unable to create resource proto from DB entry", "error", err.Error())
+			}
+
+			state.subscriberStream() <- resProto
 			b := p.getBroker(subName)
 			b.Subscribe(ctx, state.subscriberStream())
 		}

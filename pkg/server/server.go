@@ -37,35 +37,39 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 	config := protocol.ProcessorConfig{
 		Ctx:      ctx,
 		Log:      log,
-		Ingest:   &protocol.TestIngest{},
 		DBHandle: handle,
 	}
 
 	config.TypeURL = util.ListenerTypeUrl
+	config.Ingest = &protocol.TestIngest{}
 	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
 	config.TypeURL = util.ClusterTypeUrl
+	config.Ingest = &protocol.TestIngest{}
 	cp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
 	config.TypeURL = util.RouteTypeUrl
+	config.Ingest = &protocol.TestIngest{}
 	rp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
 	config.TypeURL = util.ScopedRouteTypeUrl
+	config.Ingest = &protocol.TestIngest{}
 	srp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
 	}
 
 	config.TypeURL = util.EndpointTypeUrl
+	config.Ingest = &protocol.TestIngest{}
 	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err)
@@ -148,7 +152,7 @@ func (srv *server) clientConnection(
 	send chan *discovery.DeltaDiscoveryResponse,
 	errchan chan error) {
 
-	defer srv.log.Errorw("closing client connection")
+	defer srv.log.Infow("closing client connection")
 
 	for {
 		select {

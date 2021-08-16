@@ -39,8 +39,9 @@ func setup() *testCfg {
 
 	handleConfig := db.DatabaseHandleConfig{
 		// Empty filepath makes the DB in-memory for the test.
-		Filepath: "",
-		Log:      log,
+		Filepath:     "",
+		InMemoryMode: true,
+		Log:          log,
 	}
 
 	handle, err := db.NewDatabaseHandle(ctx.Background(), handleConfig)
@@ -105,7 +106,7 @@ func populateDB(cfg *testCfg) {
 	}
 
 	for _, res := range clusterResources {
-		err := cfg.handle.Put(ctx.Background(), res, util.ClusterTypeUrl)
+		_, err := cfg.handle.Put(ctx.Background(), "", util.ClusterTypeUrl, res)
 		if err != nil {
 			panic(err.Error())
 		}

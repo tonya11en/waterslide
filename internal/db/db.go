@@ -1,26 +1,44 @@
 package db
 
 import (
+	"bytes"
 	"context"
-	"flag"
+	"fmt"
 
 	badger "github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/ristretto/z"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	flatbuffers "github.com/google/flatbuffers/go"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	"allen.gg/waterslide/internal/util"
+	"allen.gg/waterslide/internal/db/flatbuffers/waterslide_bufs"
 )
 
-// Whether the xDS resource version represents an ASCII integer (not actually part of the protocol).
-// Normally, the version is just an arbitrary string.
-var incrementingVersionScheme = flag.Bool("incrementing_versions", true, "if set to true, assumes that the xDS resource versions encountered are representations of integers and we will only update a resource if one with a \"newer\" verison is encountered")
+const (
+	// Flatbuffer builders' initial buffer size.
+	initialBufferSizeBytes = 1024
+
+	// The number of goroutines to use for iteration during streaming scans.
+	streamGoroutineCount = 16
+
+	// Pre-allocated capacity for the scan array.
+	preallocatedScanCapacity = 4096
+)
 
 type DatabaseHandle interface {
-	Put(ctx context.Context, resource *discovery.Resource, typeURL string) error
-	Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error)
-	GetAll(ctx context.Context, typeURL string) ([]*discovery.Resource, error)
-	ForEach(ctx context.Context, predicate func(res *discovery.Resource), typeURL string) error
+	// Puts a resource into the DB. Returns the GSN of the operation.
+	Put(ctx context.Context, namespace string, typeURL string, resource *discovery.Resource) (uint64, error)
+
+	// Conditionally puts a resource into the DB if |fn| returns true. Returns the GSN of the
+	// operation if mutated and 0 if there was no mutation.
+	ConditionalPut(ctx context.Context, namespace string, typeURL string, resource *discovery.Resource, fn func(resourceVersion string) bool) (uint64, error)
+
+	// Gets a resource.
+	Get(ctx context.Context, namespace string, typeURL string, resourceName string) (*waterslide_bufs.Resource, error)
+
+	// Gets all resources of a particular type.
+	GetAll(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error)
 }
 
 type DatabaseHandleConfig struct {
@@ -28,15 +46,17 @@ type DatabaseHandleConfig struct {
 	Filepath string
 
 	Log *zap.SugaredLogger
+
+	// If true, no mutations will be persisted to disk.
+	InMemoryMode bool
 }
 
+// Implementation of the DatabaseHandle interface.
 type dbHandle struct {
-	ctx context.Context
-
-	// Handle for the BadgerDB.
-	db *badger.DB
-
-	log *zap.SugaredLogger
+	ctx    context.Context
+	db     *badger.DB
+	gsnSeq *badger.Sequence
+	log    *zap.SugaredLogger
 }
 
 // Creates a database handle. If the DB file is an empty string, the database will be configured as
@@ -51,111 +71,196 @@ func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (Databa
 
 	var err error
 	opts := badger.DefaultOptions(config.Filepath)
-	if config.Filepath == "" {
-		opts.InMemory = true
-	}
+	opts.InMemory = config.InMemoryMode
 	handle.db, err = badger.Open(opts)
+	if err != nil {
+		config.Log.Errorw("failed to open db", "error", err.Error())
+		return nil, err
+	}
+
+	handle.gsnSeq, err = handle.db.GetSequence([]byte("gsn"), 1000)
+	if err != nil {
+		config.Log.Errorw("failed to get gsn sequence", "error", err.Error())
+		return nil, err
+	}
+
+	// Let's burn the first GSN, since we rely on a GSN of 0 to indicate a mutation did not occur for
+	// a conditional write.
+	_, err = handle.gsnSeq.Next()
+	if err != nil {
+		handle.log.Errorw("unable to get next gsn", "error", err.Error())
+		return nil, err
+	}
+
 	return handle, err
 }
 
 // Makes the appropriate key syntax.
-func makeKey(resourceName string, typeURL string) []byte {
-	return []byte("//" + typeURL + "/" + resourceName)
+//
+// Syntax: //<namespace>/<type URL>/<name>
+func makeKey(namespace string, typeURL string, resourceName string) []byte {
+	var b bytes.Buffer
+	b.Grow(len(namespace) + len(typeURL) + len(resourceName) + 4)
+	fmt.Fprintf(&b, "//%s/%s/%s", namespace, typeURL, resourceName)
+	return b.Bytes()
 }
 
-// If there is an incrementing version scheme, returns "false" if the Put op is not for a newer
-// resource. Otherwise, returns true.
-func (handle *dbHandle) continueWithPutOp(
-	ctx context.Context, tx *badger.Txn, key []byte, resource *discovery.Resource) (bool, error) {
+func makePrefix(namespace string, typeURL string) []byte {
+	var b bytes.Buffer
+	b.Grow(len(namespace) + len(typeURL) + 4)
+	fmt.Fprintf(&b, "//%s/%s/", namespace, typeURL)
+	return b.Bytes()
+}
 
-	if !*incrementingVersionScheme {
-		handle.log.Debugw("operating without incrementing version scheme")
-		return true, nil
-	}
+func (handle *dbHandle) Put(ctx context.Context, namespace string, typeURL string, resource *discovery.Resource) (uint64, error) {
+	return handle.ConditionalPut(ctx, namespace, typeURL, resource, nil)
+}
 
-	handle.log.Debugw("reading old value from db", "resource", resource.String())
-	item, err := tx.Get(key)
+func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, typeURL string, resource *discovery.Resource, fn func(resourceVersion string) bool) (uint64, error) {
+	key := makeKey(namespace, typeURL, resource.GetName())
+	handle.log.Debugw("starting conditional put", "key", string(key), "resource", resource.String())
 
-	// If the key doesn't exist, we should definitely continue with the Put.
-	if err == badger.ErrKeyNotFound {
-		handle.log.Debugw("key not found", "key", key)
-		return true, nil
-	}
+	// Create the resource fbuffer builder.
+	builder := flatbuffers.NewBuilder(initialBufferSizeBytes)
 
+	b, err := proto.Marshal(resource)
 	if err != nil {
-		handle.log.Errorw("error encountered during conditional write", "error", err.Error())
-		return false, err
+		handle.log.Errorw("error marshaling resource proto", "proto", resource.String(), "error", err.Error())
+		return 0, err
 	}
 
-	handle.log.Debugw("found key", "key", string(key))
-	var existing discovery.Resource
-	err = item.Value(func(val []byte) error {
-		existing, err = util.CreateResourceFromBytes(val)
-		return err
-	})
+	gsn := uint64(0)
+	return gsn, handle.db.Update(func(tx *badger.Txn) error {
+		if fn != nil {
+			item, err := tx.Get(key)
+			if err != nil {
+				handle.log.Errorw("error reading val", "key", key, "error", err.Error())
+				return err
+			}
 
-	isNewer := util.IsNewerVersion(resource.GetVersion(), existing.GetVersion())
-	handle.log.Debugw("@tallen", "is newer", isNewer, "resrouce", resource.String(), "existing", existing.String())
-	return isNewer, err
-}
+			var mutate bool
+			err = item.Value(func(val []byte) error {
+				fres := waterslide_bufs.GetRootAsResource(val, 0)
+				mutate = fn(string(fres.Version()))
+				return nil
+			})
+			if err != nil {
+				handle.log.Errorw("error reading val", "key", key, "error", err.Error())
+				return err
+			}
 
-// If 'incrementingVersionScheme' is true, this is a conditional write if the 'resource' is a newer
-// version than what exists already in the DB. Otherwise, it's a straight-forward Put operation.
-func (handle *dbHandle) Put(ctx context.Context, resource *discovery.Resource, typeURL string) error {
-	key := makeKey(resource.GetName(), typeURL)
-	return handle.db.Update(func(tx *badger.Txn) error {
-		if cont, err := handle.continueWithPutOp(ctx, tx, key, resource); !cont {
-			handle.log.Debugw("not continuing with put op", "error", err)
-			return err
+			// Condition did not pass, so no PUT will occur.
+			if !mutate {
+				return nil
+			}
 		}
 
-		b, err := proto.Marshal(resource)
+		// Set the serialized resource value and version.
+		bv := builder.CreateByteString(b)
+		v := builder.CreateString(resource.GetVersion())
+		waterslide_bufs.ResourceStart(builder)
+		waterslide_bufs.ResourceAddResourceProto(builder, bv)
+		waterslide_bufs.ResourceAddVersion(builder, v)
+
+		// Create the unique GSN.
+		gsn, err = handle.gsnSeq.Next()
 		if err != nil {
-			handle.log.Errorw("error marshaling resource proto", "proto", resource.String(), "error", err.Error())
+			handle.log.Errorw("unable to get next gsn", "error", err.Error())
 			return err
 		}
+		waterslide_bufs.ResourceAddGsn(builder, gsn)
+		re := waterslide_bufs.ResourceEnd(builder)
+		builder.Finish(re)
 
-		err = tx.Set(key, b)
+		// Set the flatbuffer value.
+		err = tx.Set(key, builder.FinishedBytes())
 		if err != nil {
 			handle.log.Errorw("db write failed", "error", err.Error(), "key", string(key))
 			return err
 		}
 
-		handle.log.Debugw("write attempt complete", "key", string(key))
+		handle.log.Debugw("write attempt complete",
+			"key", string(key),
+			"gsn", gsn,
+			"bytes_written", len(builder.FinishedBytes()))
 		return err
 	})
 }
 
 // Pulls a resource from the database by the given name/type. If the key does not exist, nil resource is returned.
-func (handle *dbHandle) Get(ctx context.Context, resourceName string, typeURL string) (*discovery.Resource, error) {
-	var res discovery.Resource
-	key := makeKey(resourceName, typeURL)
+func (handle *dbHandle) Get(ctx context.Context, namespace string, typeURL string, resourceName string) (*waterslide_bufs.Resource, error) {
+	var resFlatbuf *waterslide_bufs.Resource
+	key := makeKey(namespace, typeURL, resourceName)
 
 	err := handle.db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
-		handle.log.Debugw("starting GET transaction", "key", key, "item", item, "error", err)
+		handle.log.Debugw("starting GET transaction", "key", string(key), "item", item, "error", err)
 		if err != nil {
 			return err
 		}
 
 		valBytes, err := item.ValueCopy(nil)
 		if err != nil {
+			handle.log.Errorw("error encountered when copying value in GET op", "error", err.Error())
 			return err
 		}
 
-		return proto.Unmarshal(valBytes, &res)
+		resFlatbuf = waterslide_bufs.GetRootAsResource(valBytes, 0)
+		return nil
 	})
-
 	if err == badger.ErrKeyNotFound {
+		handle.log.Debugw("key not found for GET operation", "key", string(key))
 		return nil, nil
 	}
-	return &res, err
+
+	return resFlatbuf, err
 }
 
-// Gets all resources of a given type.
-func (handle *dbHandle) GetAll(ctx context.Context, typeURL string) ([]*discovery.Resource, error) {
-	all := []*discovery.Resource{}
-	prefix := []byte("//" + typeURL + "/")
+func (handle *dbHandle) GetAll(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error) {
+	return handle.getAllStreaming(ctx, namespace, typeURL)
+	//return handle.getAllSequential(ctx, namespace, typeURL)
+}
+
+// A Scan operation that uses iterator streaming.
+func (handle *dbHandle) getAllStreaming(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error) {
+	// Pre-allocating slots for extra perf. This may not be necessary.
+	// TODO: Benchmark this and see if it matters.
+	all := make([]*waterslide_bufs.Resource, 0, preallocatedScanCapacity)
+
+	stream := handle.db.NewStream()
+	stream.NumGo = streamGoroutineCount
+	stream.Prefix = makePrefix(namespace, typeURL)
+
+	handle.log.Debugw("performing prefix GET", "prefix", string(stream.Prefix))
+
+	// Send is called serially while Stream.Orchestrate is running, so we don't need to lock |all|.
+	stream.Send = func(buf *z.Buffer) error {
+		kvlist, err := badger.BufferToKVList(buf)
+		if err != nil {
+			return err
+		}
+
+		for _, kv := range kvlist.GetKv() {
+			all = append(all, waterslide_bufs.GetRootAsResource(kv.GetValue(), 0))
+		}
+
+		return nil
+	}
+
+	// Run the stream
+	err := stream.Orchestrate(ctx)
+	if err != nil {
+		handle.log.Errorw("error orchestrating streaming scan", "error", err.Error())
+	}
+	return all, err
+}
+
+func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error) {
+	// Pre-allocating slots for extra perf. This may not be necessary.
+	// TODO: Benchmark this and see if it matters.
+	all := make([]*waterslide_bufs.Resource, 0, preallocatedScanCapacity)
+	prefix := makePrefix(namespace, typeURL)
+	handle.log.Errorw("performing prefix GET", "prefix", string(prefix))
 
 	return all, handle.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.DefaultIteratorOptions)
@@ -163,52 +268,16 @@ func (handle *dbHandle) GetAll(ctx context.Context, typeURL string) ([]*discover
 
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var res discovery.Resource
-				err := proto.Unmarshal(val, &res)
-				if err != nil {
-					handle.log.Errorw("failed to unmarshal item", "error", err.Error())
-					return err
-				}
+			valBytes, err := item.ValueCopy(nil)
+			if err != nil {
+				handle.log.Errorw("error encountered when copying value in GET op", "error", err.Error())
+				return err
+			}
 
-				all = append(all, &res)
-				return nil
-			})
+			all = append(all, waterslide_bufs.GetRootAsResource(valBytes, 0))
 
 			if err != nil {
 				handle.log.Errorw("prefix scan failed", "prefix", prefix, "error", err.Error())
-				return err
-			}
-		}
-
-		return nil
-	})
-}
-
-// Executes the predicate on each object of the specified 'typeURL'.
-func (handle *dbHandle) ForEach(ctx context.Context, predicate func(res *discovery.Resource), typeURL string) error {
-	prefix := []byte("//" + typeURL + "/")
-
-	return handle.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var res discovery.Resource
-				err := proto.Unmarshal(val, &res)
-				if err != nil {
-					handle.log.Errorw("failed to unmarshal item", "error", err.Error(), "key", string(it.Item().Key()))
-					return err
-				}
-
-				predicate(&res)
-				return nil
-			})
-
-			if err != nil {
-				handle.log.Errorw("prefix scan failed on foreach", "prefix", prefix, "error", err.Error())
 				return err
 			}
 		}

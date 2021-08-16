@@ -76,8 +76,12 @@ func (csm *clientStateMapping) getState(ctx context.Context, stream ClientStream
 	val, loaded := csm.cmap.LoadOrStore(stream, newClientState(stream.send))
 	state := val.(*clientState)
 	if !loaded {
-		// Created a new client state, so let's get those responses processing.
-		go csm.processResponses(ctx, csm.log, state, typeURL)
+		// Created a new client state, so let's get those responses processing. When it's done
+		// processing, we'll just delete it form the map.
+		go func() {
+			csm.processResponses(ctx, csm.log, state, typeURL)
+			csm.cmap.Delete(stream)
+		}()
 	}
 
 	return val.(*clientState)

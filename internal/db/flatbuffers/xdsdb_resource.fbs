@@ -1,0 +1,16 @@
+// Schema for the resource values stored in the DB.
+namespace waterslide_bufs;
+ 
+table Resource {
+  // The serialized resource protobuf.
+  resource_proto:string;
+
+  // The monotonically increasing global sequence number unique to this resource. This is used to
+  // determine which resources are newer than others.
+  gsn:ulong;
+
+  // Resource version contained in |resource|.
+  version:string;
+}
+ 
+root_type Resource;
