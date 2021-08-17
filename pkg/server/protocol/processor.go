@@ -2,15 +2,12 @@ package protocol
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/binary"
-	"math/rand"
-	"sync/atomic"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
 
 	"allen.gg/waterslide/internal/db"
+	"allen.gg/waterslide/pkg/server/ingest"
 	"allen.gg/waterslide/pkg/server/protocol/client_state"
 )
 
@@ -20,43 +17,33 @@ const (
 
 // The processor handles discovery requests and tracks the state associated with each client stream.
 type Processor struct {
-	ctx                 context.Context
-	dbhandle            db.DatabaseHandle
-	currentNonceCounter uint64
-	log                 *zap.SugaredLogger
-	typeURL             string
-	clientStateMap      client_state.ClientStateMapping
+	ctx            context.Context
+	dbhandle       db.DatabaseHandle
+	log            *zap.SugaredLogger
+	typeURL        string
+	clientStateMap client_state.ClientStateMapping
 }
 
 type ProcessorConfig struct {
 	Ctx      context.Context
 	Log      *zap.SugaredLogger
 	TypeURL  string
-	Ingest   Ingester
+	Ingest   ingest.Ingester
 	DBHandle db.DatabaseHandle
 }
 
 func NewDeltaDiscoveryProcessor(config ProcessorConfig) (*Processor, error) {
 	p := &Processor{
-		ctx:                 config.Ctx,
-		log:                 config.Log,
-		currentNonceCounter: rand.Uint64(),
-		typeURL:             config.TypeURL,
-		dbhandle:            config.DBHandle,
+		ctx:      config.Ctx,
+		log:      config.Log,
+		typeURL:  config.TypeURL,
+		dbhandle: config.DBHandle,
 		clientStateMap: client_state.ClientStateMapping{
 			Log: config.Log,
 		},
 	}
 
 	return p, nil
-}
-
-// Creates a new and unique nonce value.
-func (p *Processor) newNonce() string {
-	i := atomic.AddUint64(&p.currentNonceCounter, 1)
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, i)
-	return base64.StdEncoding.EncodeToString(b)
 }
 
 func (p *Processor) ProcessDeltaDiscoveryRequest(
@@ -67,6 +54,9 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 	state := p.clientStateMap.GetState(ctx, stream, p.dbhandle)
 	p.log.Debugw("received delta discovery request",
 		"nonce", ddr.GetResponseNonce(), "is_ack", isAck(ddr), "is_nack", isNack(ddr))
+
+	state.HaltFlushing()
+	defer state.FlushAndResume()
 
 	// Unconditionally handle resource subscriptions.
 	for _, subName := range ddr.GetResourceNamesSubscribe() {

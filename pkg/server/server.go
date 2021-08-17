@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"io"
 
-	"allen.gg/waterslide/internal/db"
-	"allen.gg/waterslide/internal/util"
-	"allen.gg/waterslide/pkg/server/protocol"
-
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"allen.gg/waterslide/internal/db"
+	"allen.gg/waterslide/internal/util"
+	"allen.gg/waterslide/pkg/server/ingest"
+	"allen.gg/waterslide/pkg/server/protocol"
 )
 
 // An xDS delta protocol server.
@@ -41,38 +41,38 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 	}
 
 	config.TypeURL = util.ListenerTypeUrl
-	config.Ingest = &protocol.TestIngest{}
+	config.Ingest = &ingest.TestIngest{}
 	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
+		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ClusterTypeUrl
-	config.Ingest = &protocol.TestIngest{}
+	config.Ingest = &ingest.TestIngest{}
 	cp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
+		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.RouteTypeUrl
-	config.Ingest = &protocol.TestIngest{}
+	config.Ingest = &ingest.TestIngest{}
 	rp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
+		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ScopedRouteTypeUrl
-	config.Ingest = &protocol.TestIngest{}
+	config.Ingest = &ingest.TestIngest{}
 	srp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
+		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.EndpointTypeUrl
-	config.Ingest = &protocol.TestIngest{}
+	config.Ingest = &ingest.TestIngest{}
 	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err)
+		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	return &server{

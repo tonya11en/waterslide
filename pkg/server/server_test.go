@@ -188,16 +188,26 @@ func TestResourceSub(t *testing.T) {
 		ResourceNamesSubscribe: []string{"test1", "test2", "test3"},
 	}
 
-	cfg.log.Infow("sending the ddrq", "req", req.String())
-	err = stream.Send(req)
-	cfg.log.Infow("done sending ddrq")
-	assert.Nil(t, err)
+	doTest := func() {
+		cfg.log.Infow("sending the ddrq", "req", req.String())
+		err = stream.Send(req)
+		cfg.log.Infow("done sending ddrq")
+		assert.Nil(t, err)
+		ddrsp, err := stream.Recv()
+		cfg.log.Infow("received response", "response", ddrsp.String())
+		assert.Nil(t, err)
+		assert.Equal(t, ddrsp.GetTypeUrl(), util.ClusterTypeUrl)
+		assert.Equal(t, len(ddrsp.GetResources()), 3)
+	}
 
-	ddrsp, err := stream.Recv()
-	cfg.log.Infow("received response", "response", ddrsp.String())
-	assert.Nil(t, err)
-	assert.Equal(t, ddrsp.GetTypeUrl(), util.ClusterTypeUrl)
-	assert.Equal(t, len(ddrsp.GetResources()), 3)
+	doTest()
+
+	req = &discovery.DeltaDiscoveryRequest{
+		TypeUrl:                util.ClusterTypeUrl,
+		ResourceNamesSubscribe: []string{"*"},
+	}
+
+	doTest()
 }
 
 func TestNonexistentResourceSub(t *testing.T) {

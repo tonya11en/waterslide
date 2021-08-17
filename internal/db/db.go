@@ -42,8 +42,8 @@ type DatabaseHandle interface {
 	GetAll(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error)
 
 	// Subscriptions.
-	WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error
-	ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error
+	WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error)
+	ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error)
 }
 
 type DatabaseHandleConfig struct {
@@ -291,12 +291,10 @@ func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, 
 	})
 }
 
-func (handle *dbHandle) subscribeInternal(ctx context.Context, prefix []byte, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+func (handle *dbHandle) subscribeInternal(ctx context.Context, prefix []byte, cb func(key string, fbuf *waterslide_bufs.Resource) error) {
 	match := pb.Match{
 		Prefix: prefix,
 	}
-	handle.log.Infow("@tallen match", "prefix", string(prefix))
-	defer handle.log.Infow("@tallen leaving db sub")
 	go handle.db.Subscribe(ctx, func(kvl *badger.KVList) error {
 		for _, kv := range kvl.GetKv() {
 			key := make([]byte, len(kv.GetKey()))
@@ -312,16 +310,14 @@ func (handle *dbHandle) subscribeInternal(ctx context.Context, prefix []byte, cb
 		}
 		return nil
 	}, []pb.Match{match})
-	return nil
 }
 
-func (handle *dbHandle) WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+func (handle *dbHandle) WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error) {
 	prefix := makePrefix(namespace, typeURL)
-	return handle.subscribeInternal(ctx, prefix, cb)
+	handle.subscribeInternal(ctx, prefix, cb)
 }
 
-func (handle *dbHandle) ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+func (handle *dbHandle) ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error) {
 	key := makeKey(namespace, typeURL, resourceName)
-	handle.log.Infow("@tallen resource subscribe in DB", "key", key)
-	return handle.subscribeInternal(ctx, key, cb)
+	handle.subscribeInternal(ctx, key, cb)
 }

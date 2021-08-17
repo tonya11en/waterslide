@@ -30,6 +30,12 @@ type clientState struct {
 	unsubscribe chan string
 	subscribe   chan subscriptionInfo
 
+	// Writing to the channel will force a flushing of the staged updates.
+	triggerFlush chan struct{}
+
+	// For the periodic update flushing.
+	ticker time.Ticker
+
 	// Resources staged for update. Maps the type URL to a map of names to resource flatbuffer.
 	//
 	// typeURL -> name -> flatbuf.
@@ -58,6 +64,8 @@ func NewClientState(ctx context.Context, log *zap.SugaredLogger, stream discover
 		deactivateNonce: make(chan string),
 		subscribe:       make(chan subscriptionInfo),
 		unsubscribe:     make(chan string),
+		ticker:          *time.NewTicker(util.UpdateInterval),
+		triggerFlush:    make(chan struct{}),
 		activeSubs:      make(map[string]context.CancelFunc),
 		stagedUpdates:   make(map[string]map[string]*waterslide_bufs.Resource),
 		updateStream:    make(chan *waterslide_bufs.Resource),
@@ -106,22 +114,21 @@ func (cs *clientState) doUnsubscribeInternal(resourceName string) {
 }
 
 func (cs *clientState) DoSubscribe(namespace string, typeURL string, resourceName string) {
-	cs.log.Debugw("@tallen doing sub")
 	cs.subscribe <- subscriptionInfo{
 		namespace:    namespace,
 		typeURL:      typeURL,
 		resourceName: resourceName,
 	}
-	cs.log.Debugw("@tallen pushed in chan")
 }
 
 func (cs *clientState) doSubscribeInternal(namespace string, typeURL string, resourceName string) <-chan *waterslide_bufs.Resource {
-	cs.log.Debugw("@tallen do sub internal")
 	out := make(chan *waterslide_bufs.Resource)
-
 	if _, ok := cs.activeSubs[resourceName]; ok {
 		// We're already subscribed.
-		cs.log.Debugw("tried subscribing to resource with existing subscription", "namespace", namespace, "typeURL", typeURL, "resource_name", resourceName)
+		cs.log.Debugw("tried subscribing to resource with existing subscription",
+			"namespace", namespace,
+			"typeURL", typeURL,
+			"resource_name", resourceName)
 		return out
 	}
 	cs.log.Debugw("performing subscribe", "namespace", namespace, "typeURL", typeURL, "resource_name", resourceName)
@@ -136,41 +143,54 @@ func (cs *clientState) doSubscribeInternal(namespace string, typeURL string, res
 	// It's fine to do this async.
 	go func() {
 		defer close(out)
-		cs.log.Debugw("@tallen async thing")
 		if resourceName == "*" {
-			cs.log.Debugw("@tallen start wildcard")
-			err := cs.dbhandle.WildcardSubscribe(ctx, namespace, typeURL, fn)
-			if err != nil {
-				cs.log.Fatalw(err.Error())
-			}
-
-			all, err := cs.dbhandle.GetAll(ctx, namespace, typeURL)
-			if err != nil {
-				cs.log.Fatalw(err.Error())
-			}
-
-			cs.log.Debugw("@tallen wildcard", "all", all)
-			for _, fb := range all {
-				out <- fb
-			}
-			cs.log.Debugw("@tallen leaving wildcard", "all", all)
+			cs.continueWildcardSubscription(ctx, namespace, typeURL, resourceName, fn, out)
 		} else {
-			cs.log.Debugw("@tallen start single")
-			err := cs.dbhandle.ResourceSubscribe(ctx, namespace, typeURL, resourceName, fn)
-			if err != nil {
-				cs.log.Fatalw(err.Error())
-			}
-
-			cs.log.Debugw("@tallen singleton")
-			fb, err := cs.dbhandle.Get(ctx, namespace, typeURL, resourceName)
-			if err != nil {
-				cs.log.Fatalw(err.Error())
-			}
-			out <- fb
-			cs.log.Debugw("@tallen leaving singleton")
+			cs.continueSingleSubscription(ctx, namespace, typeURL, resourceName, fn, out)
 		}
 	}()
 	return out
+}
+
+func (cs *clientState) continueWildcardSubscription(
+	ctx context.Context,
+	namespace string,
+	typeURL string,
+	resourceName string,
+	dbSubscribeCb func(key string, fbuf *waterslide_bufs.Resource) error,
+	out chan *waterslide_bufs.Resource) {
+
+	cs.log.Debugw("carrying out wildcard subscription",
+		"namespace", namespace, "typeURL", typeURL)
+	cs.dbhandle.WildcardSubscribe(ctx, namespace, typeURL, dbSubscribeCb)
+
+	all, err := cs.dbhandle.GetAll(ctx, namespace, typeURL)
+	if err != nil {
+		cs.log.Fatalw(err.Error())
+	}
+
+	for _, fb := range all {
+		out <- fb
+	}
+}
+
+func (cs *clientState) continueSingleSubscription(
+	ctx context.Context,
+	namespace string,
+	typeURL string,
+	resourceName string,
+	dbSubscribeCb func(key string, fbuf *waterslide_bufs.Resource) error,
+	out chan *waterslide_bufs.Resource) {
+
+	cs.log.Debugw("carrying out single resource subscription",
+		"namespace", namespace, "typeURL", typeURL, "resource_name", resourceName)
+	cs.dbhandle.ResourceSubscribe(ctx, namespace, typeURL, resourceName, dbSubscribeCb)
+
+	fb, err := cs.dbhandle.Get(ctx, namespace, typeURL, resourceName)
+	if err != nil {
+		cs.log.Fatalw(err.Error())
+	}
+	out <- fb
 }
 
 func (cs *clientState) sendResponse(typeURL string) {
@@ -203,8 +223,7 @@ func (cs *clientState) sendResponse(typeURL string) {
 	})
 }
 
-func (cs *clientState) processUpdate(resBuf *waterslide_bufs.Resource) error {
-	cs.log.Infow("@tallen process update", "resbuf", resBuf)
+func (cs *clientState) stageResourceUpdate(resBuf *waterslide_bufs.Resource) error {
 	res, err := util.ResourceProtoFromFlat(resBuf)
 	if err != nil {
 		return err
@@ -252,8 +271,6 @@ func makeEmptyFlatResource(resourceName string) *waterslide_bufs.Resource {
 
 func (cs *clientState) ProcessResponses() {
 	cs.log.Infow("processing responses for client")
-	ticker := time.NewTicker(util.UpdateInterval)
-
 	for {
 		select {
 		case <-cs.ctx.Done():
@@ -261,20 +278,21 @@ func (cs *clientState) ProcessResponses() {
 
 		// Handle subscribes.
 		case subInfo := <-cs.subscribe:
-			cs.log.Info("@tallen subscribing")
 			for fb := range cs.doSubscribeInternal(subInfo.namespace, subInfo.typeURL, subInfo.resourceName) {
 				// If the flatbuffer is nil, the object does not exist.
 				if fb == nil {
-					cs.log.Info("@tallen FB IS NIL")
+					cs.log.Debugw("subscription encountered for nonexistent resource",
+						"resource_name", subInfo.resourceName,
+						"namespace", subInfo.namespace,
+						"typeURL", subInfo.typeURL)
 					fb = makeEmptyFlatResource(subInfo.resourceName)
 				}
 
-				err := cs.processUpdate(fb)
+				err := cs.stageResourceUpdate(fb)
 				if err != nil {
 					cs.log.Fatalw("error unmarshaling resource proto", "error", err.Error())
 				}
 			}
-			cs.log.Info("@tallen DONE subscribing")
 
 		// Handle unsubscribes.
 		case resName := <-cs.unsubscribe:
@@ -287,26 +305,40 @@ func (cs *clientState) ProcessResponses() {
 
 		// Stage the updates.
 		case resBuf := <-cs.updateStream:
-			err := cs.processUpdate(resBuf)
+			err := cs.stageResourceUpdate(resBuf)
 			if err != nil {
 				cs.log.Fatalw("error unmarshaling resource proto", "error", err.Error())
 			}
 
+		// Force-trigger a flush of the staged updates.
+		case <-cs.triggerFlush:
+			cs.flushStagedUpdates()
+			cs.ticker.Reset(util.UpdateInterval)
+
 		// Periodically send a response with the relevant updates.
-		case <-ticker.C:
-			cs.log.Info("@tallen tick tickticktick")
-			if len(cs.stagedUpdates) == 0 {
-				cs.log.Info("@tallen no staged updates")
-				continue
-			}
-			for turl, m := range cs.stagedUpdates {
-				if len(m) == 0 {
-					cs.log.Debugw("ticker fired -- nothing to process", "typeURL", turl)
-					continue
-				}
-				cs.sendResponse(turl)
-			}
+		case <-cs.ticker.C:
+			cs.flushStagedUpdates()
 		}
+	}
+}
+
+// Stops the periodic flushing of staged updates.
+func (cs *clientState) HaltFlushing() {
+	cs.ticker.Stop()
+}
+
+// Sets up the client state for immediate flush and resets the ticker to resume flushing.
+func (cs *clientState) FlushAndResume() {
+	cs.triggerFlush <- struct{}{}
+}
+
+func (cs *clientState) flushStagedUpdates() {
+	for turl, m := range cs.stagedUpdates {
+		if len(m) == 0 {
+			cs.log.Debugw("ticker fired -- nothing to process", "typeURL", turl)
+			continue
+		}
+		cs.sendResponse(turl)
 	}
 }
 

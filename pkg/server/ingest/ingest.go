@@ -1,4 +1,4 @@
-package protocol
+package ingest
 
 import (
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
