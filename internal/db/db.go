@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	badger "github.com/dgraph-io/badger/v3"
+	"github.com/dgraph-io/badger/v3/pb"
 	"github.com/dgraph-io/ristretto/z"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -39,6 +40,10 @@ type DatabaseHandle interface {
 
 	// Gets all resources of a particular type.
 	GetAll(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error)
+
+	// Subscriptions.
+	WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error
+	ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error
 }
 
 type DatabaseHandleConfig struct {
@@ -100,8 +105,8 @@ func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (Databa
 // Syntax: //<namespace>/<type URL>/<name>
 func makeKey(namespace string, typeURL string, resourceName string) []byte {
 	var b bytes.Buffer
-	b.Grow(len(namespace) + len(typeURL) + len(resourceName) + 4)
-	fmt.Fprintf(&b, "//%s/%s/%s", namespace, typeURL, resourceName)
+	b.Grow(len(namespace) + len(typeURL) + len(resourceName) + 5)
+	fmt.Fprintf(&b, "//%s/%s/%s/", namespace, typeURL, resourceName)
 	return b.Bytes()
 }
 
@@ -284,4 +289,39 @@ func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, 
 
 		return nil
 	})
+}
+
+func (handle *dbHandle) subscribeInternal(ctx context.Context, prefix []byte, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+	match := pb.Match{
+		Prefix: prefix,
+	}
+	handle.log.Infow("@tallen match", "prefix", string(prefix))
+	defer handle.log.Infow("@tallen leaving db sub")
+	go handle.db.Subscribe(ctx, func(kvl *badger.KVList) error {
+		for _, kv := range kvl.GetKv() {
+			key := make([]byte, len(kv.GetKey()))
+			copy(key, kv.GetKey())
+			val := make([]byte, len(kv.GetValue()))
+			copy(val, kv.GetValue())
+			resFlatbuf := waterslide_bufs.GetRootAsResource(val, 0)
+			err := cb(string(key), resFlatbuf)
+			if err != nil {
+				handle.log.Errorw("error during subscriber callback", "error", err.Error())
+				return err
+			}
+		}
+		return nil
+	}, []pb.Match{match})
+	return nil
+}
+
+func (handle *dbHandle) WildcardSubscribe(ctx context.Context, namespace string, typeURL string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+	prefix := makePrefix(namespace, typeURL)
+	return handle.subscribeInternal(ctx, prefix, cb)
+}
+
+func (handle *dbHandle) ResourceSubscribe(ctx context.Context, namespace string, typeURL string, resourceName string, cb func(key string, fbuf *waterslide_bufs.Resource) error) error {
+	key := makeKey(namespace, typeURL, resourceName)
+	handle.log.Infow("@tallen resource subscribe in DB", "key", key)
+	return handle.subscribeInternal(ctx, key, cb)
 }

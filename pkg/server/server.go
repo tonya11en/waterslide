@@ -142,8 +142,7 @@ func (srv *server) DeltaAggregatedResources(stream discovery.AggregatedDiscovery
 			return err
 		}
 
-		s := protocol.NewClientStream(&stream, send)
-		go p.ProcessDeltaDiscoveryRequest(stream.Context(), ddr, s)
+		go p.ProcessDeltaDiscoveryRequest(stream.Context(), ddr, stream)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
+	"allen.gg/waterslide/pkg/server/protocol"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -80,7 +81,7 @@ func populateDB(cfg *testCfg) {
 	// Clusters to populate the DB with.
 	clusterResources := []*discovery.Resource{
 		{
-			Name:    "cluster_1",
+			Name:    "test1",
 			Version: "1",
 			Resource: makeAny(
 				&cluster.Cluster{
@@ -88,7 +89,7 @@ func populateDB(cfg *testCfg) {
 				}),
 		},
 		{
-			Name:    "cluster_2",
+			Name:    "test2",
 			Version: "1",
 			Resource: makeAny(
 				&cluster.Cluster{
@@ -96,7 +97,7 @@ func populateDB(cfg *testCfg) {
 				}),
 		},
 		{
-			Name:    "cluster_3",
+			Name:    "test3",
 			Version: "1",
 			Resource: makeAny(
 				&cluster.Cluster{
@@ -106,7 +107,7 @@ func populateDB(cfg *testCfg) {
 	}
 
 	for _, res := range clusterResources {
-		_, err := cfg.handle.Put(ctx.Background(), "", util.ClusterTypeUrl, res)
+		_, err := cfg.handle.Put(ctx.Background(), protocol.CommonNamespace, util.ClusterTypeUrl, res)
 		if err != nil {
 			panic(err.Error())
 		}
@@ -208,7 +209,7 @@ func TestNonexistentResourceSub(t *testing.T) {
 
 	req := &discovery.DeltaDiscoveryRequest{
 		TypeUrl:                util.ClusterTypeUrl,
-		ResourceNamesSubscribe: []string{"test1", "test2", "test3"},
+		ResourceNamesSubscribe: []string{"bogus1", "bogus2", "bogus3"},
 	}
 
 	cfg.log.Infow("sending the ddrq", "req", req.String())
@@ -219,6 +220,14 @@ func TestNonexistentResourceSub(t *testing.T) {
 	ddrsp, err := stream.Recv()
 	cfg.log.Infow("received response", "response", ddrsp.String())
 	assert.Nil(t, err)
-	assert.Equal(t, ddrsp.GetTypeUrl(), util.ClusterTypeUrl)
 	assert.Equal(t, len(ddrsp.GetResources()), 3)
+
+	names := make(map[string]struct{})
+	names["bogus1"] = struct{}{}
+	names["bogus2"] = struct{}{}
+	names["bogus3"] = struct{}{}
+	for _, res := range ddrsp.GetResources() {
+		delete(names, res.GetName())
+	}
+	assert.Equal(t, 0, len(names))
 }

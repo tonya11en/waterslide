@@ -13,7 +13,8 @@ const (
 	RouteTypeUrl       = typeUrlPrefix + "envoy.config.route.v3.RouteConfiguration"
 	ScopedRouteTypeUrl = typeUrlPrefix + "envoy.config.route.v3.ScopedRouteConfiguration"
 
-	UpdateInterval = time.Second * 1
+	UpdateInterval       = 1 * time.Second
+	UpdateIntervalJitter = 100 * time.Millisecond
 
 	NumNonceChars = 16
 )

@@ -3,6 +3,7 @@ package util
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -43,6 +44,10 @@ func IsNewerVersion(new string, existing string) bool {
 
 // Unmarshals a resource proto from a flatbuffer resource.
 func ResourceProtoFromFlat(fbuf *waterslide_bufs.Resource) (*discovery.Resource, error) {
+	if fbuf == nil {
+		return nil, fmt.Errorf("nil flatbuffer passed")
+	}
+
 	var res discovery.Resource
 	err := proto.Unmarshal(fbuf.ResourceProto(), &res)
 	return &res, err
@@ -87,9 +92,10 @@ func CreateResource(anyRes *anypb.Any) (ret discovery.Resource, err error) {
 }
 
 // Creates a resource proto from raw bytes.
-func CreateResourceFromBytes(b []byte) (ret discovery.Resource, err error) {
-	err = proto.Unmarshal(b, &ret)
-	return
+func CreateResourceFromBytes(b []byte) (*discovery.Resource, error) {
+	var ret discovery.Resource
+	err := proto.Unmarshal(b, &ret)
+	return &ret, err
 }
 
 func MakeRandomNonce() string {
