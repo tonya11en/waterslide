@@ -7,7 +7,6 @@ import (
 	"go.uber.org/zap"
 
 	"allen.gg/waterslide/internal/db"
-	"allen.gg/waterslide/pkg/server/ingest"
 	"allen.gg/waterslide/pkg/server/protocol/client_state"
 )
 
@@ -28,7 +27,6 @@ type ProcessorConfig struct {
 	Ctx      context.Context
 	Log      *zap.SugaredLogger
 	TypeURL  string
-	Ingest   ingest.Ingester
 	DBHandle db.DatabaseHandle
 }
 

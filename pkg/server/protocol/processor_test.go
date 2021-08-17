@@ -8,7 +8,6 @@ import (
 
 	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
-	"allen.gg/waterslide/pkg/server/ingest"
 )
 
 type testCfg struct {
@@ -39,7 +38,6 @@ func setup() *testCfg {
 		Ctx:      context.TODO(),
 		Log:      log,
 		TypeURL:  util.ClusterTypeUrl,
-		Ingest:   &ingest.TestIngest{},
 		DBHandle: handle,
 	}
 

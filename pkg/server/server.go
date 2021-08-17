@@ -13,7 +13,6 @@ import (
 
 	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
-	"allen.gg/waterslide/pkg/server/ingest"
 	"allen.gg/waterslide/pkg/server/protocol"
 )
 
@@ -41,35 +40,30 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 	}
 
 	config.TypeURL = util.ListenerTypeUrl
-	config.Ingest = &ingest.TestIngest{}
 	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ClusterTypeUrl
-	config.Ingest = &ingest.TestIngest{}
 	cp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.RouteTypeUrl
-	config.Ingest = &ingest.TestIngest{}
 	rp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ScopedRouteTypeUrl
-	config.Ingest = &ingest.TestIngest{}
 	srp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.EndpointTypeUrl
-	config.Ingest = &ingest.TestIngest{}
 	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
 		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
