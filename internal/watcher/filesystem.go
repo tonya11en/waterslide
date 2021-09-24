@@ -1,11 +1,14 @@
 package watcher
 
 import (
+	"context"
 	"io/ioutil"
 
 	"github.com/golang/protobuf/jsonpb"
 
+	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
+	"allen.gg/waterslide/pkg/server/protocol"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/fsnotify/fsnotify"
@@ -13,15 +16,14 @@ import (
 )
 
 type ResourceWatcher struct {
-	resources      discovery.DiscoveryResponse
-	consumerStream chan *discovery.Resource
-
+	ctx      context.Context
+	dbhandle db.DatabaseHandle
 	watcher  *fsnotify.Watcher
 	log      *zap.SugaredLogger
 	filepath string
 }
 
-func NewFilesystemResourceWatcher(log *zap.SugaredLogger, consumerStream chan *discovery.Resource) (*ResourceWatcher, error) {
+func NewFilesystemResourceWatcher(ctx context.Context, log *zap.SugaredLogger, dbhandle db.DatabaseHandle) (*ResourceWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Info("creating new fs resource watcher")
@@ -29,9 +31,10 @@ func NewFilesystemResourceWatcher(log *zap.SugaredLogger, consumerStream chan *d
 	}
 
 	rw := &ResourceWatcher{
-		watcher:        watcher,
-		log:            log,
-		consumerStream: consumerStream,
+		ctx:      ctx,
+		watcher:  watcher,
+		log:      log,
+		dbhandle: dbhandle,
 	}
 
 	return rw, nil
@@ -46,18 +49,24 @@ func (rw *ResourceWatcher) readFromFile() error {
 		return err
 	}
 
-	err = jsonpb.UnmarshalString(string(data), &rw.resources)
+	var resources discovery.DiscoveryResponse
+	err = jsonpb.UnmarshalString(string(data), &resources)
 	if err != nil {
 		rw.log.Errorw("error unmarshaling proto from file data", "error", err.Error(), "file_data", data)
 		return err
 	}
 
-	for _, resourceAny := range rw.resources.Resources {
+	for _, resourceAny := range resources.Resources {
 		res, err := util.CreateResource(resourceAny)
 		if err != nil {
 			return err
 		}
-		rw.consumerStream <- &res
+
+		rw.dbhandle.ConditionalPut(
+			rw.ctx, protocol.CommonNamespace, res.GetResource().GetTypeUrl(), res,
+			func(resourceVersion string) bool {
+				return resourceVersion != res.GetVersion()
+			})
 	}
 
 	return err

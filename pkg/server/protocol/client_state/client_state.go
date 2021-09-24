@@ -94,10 +94,12 @@ func (cs *clientState) MarkNonceStale(n string) {
 // Renders the nonce stale if it exists.
 func (cs *clientState) setNonceInactive(nonce string) {
 	if cancelFunc, ok := cs.activeNonces[nonce]; ok {
-		cancelFunc()
+		cs.log.Infow("setting nonce inactive", "nonce", nonce)
 		delete(cs.activeNonces, nonce)
+		cancelFunc()
 	}
 }
+
 func (cs *clientState) DoUnsubscribe(resourceName string) {
 	cs.unsubscribe <- resourceName
 }
@@ -194,7 +196,7 @@ func (cs *clientState) continueSingleSubscription(
 }
 
 func (cs *clientState) sendResponse(typeURL string) {
-	cs.log.Debugw("ticker fired -- sending response", "typeURL", typeURL)
+	cs.log.Debugw("sending response", "typeURL", typeURL)
 	staged := cs.stagedUpdates[typeURL]
 	resources := []*discovery.Resource{}
 	toRemove := []string{}
@@ -212,6 +214,8 @@ func (cs *clientState) sendResponse(typeURL string) {
 		resources = append(resources, res)
 		cs.log.Debugw("ticker", "resource", res.String())
 	}
+
+	delete(cs.stagedUpdates, typeURL)
 
 	n := util.MakeRandomNonce()
 	cs.startNonceLifetime(15*time.Second, n)
@@ -274,10 +278,12 @@ func (cs *clientState) ProcessResponses() {
 	for {
 		select {
 		case <-cs.ctx.Done():
+			cs.log.Debugw("context done")
 			return
 
 		// Handle subscribes.
 		case subInfo := <-cs.subscribe:
+			cs.log.Debugw("subscription info received", "subinfo", subInfo)
 			for fb := range cs.doSubscribeInternal(subInfo.namespace, subInfo.typeURL, subInfo.resourceName) {
 				// If the flatbuffer is nil, the object does not exist.
 				if fb == nil {
@@ -296,15 +302,16 @@ func (cs *clientState) ProcessResponses() {
 
 		// Handle unsubscribes.
 		case resName := <-cs.unsubscribe:
+			cs.log.Debugw("unsubscription info received", "resName", resName)
 			cs.doUnsubscribeInternal(resName)
 
 		// Set a nonce as stale.
 		case n := <-cs.deactivateNonce:
-			cs.log.Info("setting nonce inactive", "nonce", n)
 			cs.setNonceInactive(n)
 
 		// Stage the updates.
 		case resBuf := <-cs.updateStream:
+			cs.log.Debugw("staging updates...")
 			err := cs.stageResourceUpdate(resBuf)
 			if err != nil {
 				cs.log.Fatalw("error unmarshaling resource proto", "error", err.Error())
@@ -312,8 +319,8 @@ func (cs *clientState) ProcessResponses() {
 
 		// Force-trigger a flush of the staged updates.
 		case <-cs.triggerFlush:
+			cs.log.Debugw("force-triggering flush")
 			cs.flushStagedUpdates()
-			cs.ticker.Reset(util.UpdateInterval)
 
 		// Periodically send a response with the relevant updates.
 		case <-cs.ticker.C:
@@ -330,14 +337,12 @@ func (cs *clientState) HaltFlushing() {
 // Sets up the client state for immediate flush and resets the ticker to resume flushing.
 func (cs *clientState) FlushAndResume() {
 	cs.triggerFlush <- struct{}{}
+	cs.ticker.Reset(util.UpdateInterval)
 }
 
 func (cs *clientState) flushStagedUpdates() {
-	for turl, m := range cs.stagedUpdates {
-		if len(m) == 0 {
-			cs.log.Debugw("ticker fired -- nothing to process", "typeURL", turl)
-			continue
-		}
+	for turl := range cs.stagedUpdates {
+		cs.log.Debugw("flushing a staged update", "updates_left", len(cs.stagedUpdates))
 		cs.sendResponse(turl)
 	}
 }

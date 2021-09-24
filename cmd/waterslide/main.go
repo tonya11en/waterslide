@@ -16,9 +16,12 @@ import (
 var (
 	listenPort = flag.String("port", "8080", "port the server listens on")
 	dbFilepath = flag.String("db_path", "/tmp/waterslide_db", "filepath to the database")
+	dbInMemory = flag.Bool("db_in_memory", false, "filepath to the database")
 )
 
 func main() {
+	flag.Parse()
+
 	l, err := zap.NewDevelopment()
 	if err != nil {
 		panic(err.Error())
@@ -27,11 +30,14 @@ func main() {
 
 	ctx := context.Background()
 
-	log.Info("creating database handle")
 	handleConfig := db.DatabaseHandleConfig{
-		Filepath: *dbFilepath,
-		Log:      log,
+		Filepath:     *dbFilepath,
+		Log:          log,
+		InMemoryMode: *dbInMemory,
 	}
+	log.Infow("creating database handle",
+		"filepath", handleConfig.Filepath,
+		"in_memory_mode", handleConfig.InMemoryMode)
 	handle, err := db.NewDatabaseHandle(ctx, handleConfig)
 	if err != nil {
 		log.Fatalw("failed to initialize database handle", "error", err.Error())

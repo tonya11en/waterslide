@@ -4,7 +4,8 @@
 compile:
 	mkdir -p bin && \
 	go mod tidy && \
-	go build -o ./bin/. ./...
+	go build -o ./bin/. ./... && \
+	go vet ./...
 
 .PHONY: test
 test: compile

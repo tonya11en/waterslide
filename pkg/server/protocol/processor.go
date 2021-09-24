@@ -51,10 +51,37 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 
 	state := p.clientStateMap.GetState(ctx, stream, p.dbhandle)
 	p.log.Debugw("received delta discovery request",
-		"nonce", ddr.GetResponseNonce(), "is_ack", isAck(ddr), "is_nack", isNack(ddr))
+		"nonce", ddr.GetResponseNonce(),
+		"is_ack", isAck(ddr),
+		"is_nack", isNack(ddr),
+		"type_url", ddr.GetTypeUrl(),
+		"error_detail", ddr.GetErrorDetail(),
+		"initial_resource_versions", ddr.GetInitialResourceVersions(),
+		"resource_names_subscribe", ddr.GetResourceNamesSubscribe(),
+		"resource_names_unsubscribe", ddr.GetResourceNamesUnsubscribe())
+
+	if isNack(ddr) {
+		p.log.Errorw("NACK received", "nonce", ddr.GetResponseNonce(), "error_detail", ddr.GetErrorDetail())
+		state.MarkNonceStale(ddr.GetResponseNonce())
+		return
+	}
+
+	if isAck(ddr) {
+		p.log.Debugw("ACK received", "nonce", ddr.GetResponseNonce())
+		state.MarkNonceStale(ddr.GetResponseNonce())
+		return
+	}
 
 	state.HaltFlushing()
 	defer state.FlushAndResume()
+
+	// Legacy behavior states that wildcard subscriptions may also come in the form of empty
+	// subscribe/unsubscribe fields. We'll need to handle this here.
+	if !isAck(ddr) && !isNack(ddr) &&
+		len(ddr.GetResourceNamesSubscribe()) == 0 && len(ddr.GetResourceNamesUnsubscribe()) == 0 {
+		p.log.Debugw("client subscribing to wildcard resource via legacy behavior (empty sub/unsub fields)")
+		state.DoSubscribe(CommonNamespace, p.typeURL, "*")
+	}
 
 	// Unconditionally handle resource subscriptions.
 	for _, subName := range ddr.GetResourceNamesSubscribe() {
@@ -68,15 +95,6 @@ func (p *Processor) ProcessDeltaDiscoveryRequest(
 		state.DoUnsubscribe(unsubName)
 	}
 
-	if isNack(ddr) {
-		p.log.Errorw("NACK received", "nonce", ddr.GetResponseNonce(), "error_detail", ddr.GetErrorDetail())
-		state.MarkNonceStale(ddr.GetResponseNonce())
-	}
-
-	if isAck(ddr) {
-		p.log.Debugw("ACK received", "nonce", ddr.GetResponseNonce())
-		state.MarkNonceStale(ddr.GetResponseNonce())
-	}
 }
 
 func isAck(ddrq *discovery.DeltaDiscoveryRequest) bool {

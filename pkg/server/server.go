@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -39,34 +40,48 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 		DBHandle: handle,
 	}
 
+	// @tallen crazy test
+	go func() {
+		for {
+			time.Sleep(time.Second * 3)
+
+			res := util.MakeRandomResource()
+			_, err := handle.Put(ctx, protocol.CommonNamespace, res.Resource.GetTypeUrl(), res)
+			if err != nil {
+				panic(err.Error())
+			}
+
+		}
+	}()
+
 	config.TypeURL = util.ListenerTypeUrl
 	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
+		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ClusterTypeUrl
 	cp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
+		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.RouteTypeUrl
 	rp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
+		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.ScopedRouteTypeUrl
 	srp, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
+		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
 	config.TypeURL = util.EndpointTypeUrl
 	ep, err := protocol.NewDeltaDiscoveryProcessor(config)
 	if err != nil {
-		log.Fatal("unable to create delta discovery processor", "error", err, "typeURL", config.TypeURL)
+		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
 	return &server{

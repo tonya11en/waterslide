@@ -241,3 +241,26 @@ func TestNonexistentResourceSub(t *testing.T) {
 	}
 	assert.Equal(t, 0, len(names))
 }
+
+func TestResourceUpdate(t *testing.T) {
+	cfg := setup()
+	bc := getBufconn(t)
+	client := discovery.NewAggregatedDiscoveryServiceClient(bc)
+	stream, err := client.DeltaAggregatedResources(ctx.Background())
+	assert.Nil(t, err)
+
+	req := &discovery.DeltaDiscoveryRequest{
+		TypeUrl:                util.ClusterTypeUrl,
+		ResourceNamesSubscribe: []string{"bogus1", "bogus2", "bogus3"},
+	}
+
+	cfg.log.Infow("sending the ddrq", "req", req.String())
+	err = stream.Send(req)
+	cfg.log.Infow("done sending ddrq")
+	assert.Nil(t, err)
+
+	ddrsp, err := stream.Recv()
+	cfg.log.Infow("received response", "response", ddrsp.String())
+	assert.Nil(t, err)
+	assert.Equal(t, len(ddrsp.GetResources()), 3)
+}

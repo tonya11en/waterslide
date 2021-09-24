@@ -1,9 +1,11 @@
 package util
 
 import (
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"math/rand"
+	mrand "math/rand"
 	"strconv"
 	"time"
 
@@ -12,12 +14,14 @@ import (
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
-	_ "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	auth "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	runtime "github.com/envoyproxy/go-control-plane/envoy/service/runtime/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"allen.gg/waterslide/internal/db/flatbuffers/waterslide_bufs"
 )
@@ -77,18 +81,20 @@ func GetResourceName(res proto.Message) string {
 }
 
 // Creates a resource proto from an Any type.
-func CreateResource(anyRes *anypb.Any) (ret discovery.Resource, err error) {
+func CreateResource(anyRes *anypb.Any) (*discovery.Resource, error) {
+	var ret discovery.Resource
+
 	// TODO: use a real version.
 	m, err := anyRes.UnmarshalNew()
 	if err != nil {
-		return
+		return &ret, err
 	}
 
 	ret.Version = time.Now().String()
 	ret.Resource = anyRes
 	ret.Name = GetResourceName(m)
 
-	return ret, err
+	return &ret, err
 }
 
 // Creates a resource proto from raw bytes.
@@ -100,9 +106,76 @@ func CreateResourceFromBytes(b []byte) (*discovery.Resource, error) {
 
 func MakeRandomNonce() string {
 	b := make([]byte, NumNonceChars)
-	_, err := rand.Read(b)
+	_, err := crand.Read(b)
 	if err != nil {
 		panic("failed to read from rand")
 	}
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+// TODO: may not need this later. Just listener and cluster for now.
+func MakeRandomResource() *discovery.Resource {
+	var res discovery.Resource
+	res.Name = MakeRandomNonce()
+
+	if mrand.Intn(2) == 0 {
+		c := &cluster.Cluster{
+			Name:           MakeRandomNonce(),
+			ConnectTimeout: &durationpb.Duration{Seconds: 1},
+		}
+		apb, err := anypb.New(c)
+		if err != nil {
+			panic(err.Error())
+		}
+		r, err := CreateResource(apb)
+		if err != nil {
+			panic(err.Error())
+		}
+		return r
+	}
+
+	manager := &hcm.HttpConnectionManager{
+		StatPrefix: "http",
+		RouteSpecifier: &hcm.HttpConnectionManager_RouteConfig{
+			RouteConfig: &route.RouteConfiguration{},
+		},
+		HttpFilters: []*hcm.HttpFilter{{
+			Name: wellknown.Router,
+		}},
+	}
+	pbst, err := anypb.New(manager)
+	if err != nil {
+		panic(err)
+	}
+
+	l := &listener.Listener{
+		Name: MakeRandomNonce(),
+		Address: &core.Address{
+			Address: &core.Address_SocketAddress{
+				SocketAddress: &core.SocketAddress{
+					Address: "::",
+					PortSpecifier: &core.SocketAddress_PortValue{
+						PortValue: uint32(rand.Intn(65535)),
+					},
+				},
+			},
+		},
+		FilterChains: []*listener.FilterChain{{
+			Filters: []*listener.Filter{{
+				Name: wellknown.HTTPConnectionManager,
+				ConfigType: &listener.Filter_TypedConfig{
+					TypedConfig: pbst,
+				},
+			}},
+		}},
+	}
+	apb, err := anypb.New(l)
+	if err != nil {
+		panic(err.Error())
+	}
+	r, err := CreateResource(apb)
+	if err != nil {
+		panic(err.Error())
+	}
+	return r
 }
