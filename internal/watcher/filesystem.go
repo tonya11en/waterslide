@@ -52,7 +52,7 @@ func (rw *ResourceWatcher) readFromFile() error {
 	var resources discovery.DiscoveryResponse
 	err = jsonpb.UnmarshalString(string(data), &resources)
 	if err != nil {
-		rw.log.Errorw("error unmarshaling proto from file data", "error", err.Error(), "file_data", data)
+		rw.log.Errorw("error unmarshaling proto from file data", "error", err.Error())
 		return err
 	}
 
@@ -60,6 +60,11 @@ func (rw *ResourceWatcher) readFromFile() error {
 		res, err := util.CreateResource(resourceAny)
 		if err != nil {
 			return err
+		}
+
+		// lol wat
+		if res.GetVersion() == "" {
+			res.Version = res.String()
 		}
 
 		rw.dbhandle.ConditionalPut(
@@ -77,9 +82,7 @@ func (rw *ResourceWatcher) handleEvent(event fsnotify.Event) error {
 
 	var err error
 	switch event.Op {
-	case fsnotify.Write:
-		fallthrough
-	case fsnotify.Create:
+	case fsnotify.Create, fsnotify.Rename, fsnotify.Write:
 		err = rw.readFromFile()
 	default:
 		rw.log.Infow("disregarding op", "op", event.Op)

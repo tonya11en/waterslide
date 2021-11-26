@@ -105,15 +105,15 @@ func NewDatabaseHandle(ctx context.Context, config DatabaseHandleConfig) (Databa
 // Syntax: //<namespace>/<type URL>/<name>
 func makeKey(namespace string, typeURL string, resourceName string) []byte {
 	var b bytes.Buffer
-	b.Grow(len(namespace) + len(typeURL) + len(resourceName) + 5)
-	fmt.Fprintf(&b, "//%s/%s/%s/", namespace, typeURL, resourceName)
+	b.Grow(len(namespace) + len(typeURL) + len(resourceName) + 4)
+	b.WriteString(fmt.Sprintf("//%s/%s/%s", namespace, typeURL, resourceName))
 	return b.Bytes()
 }
 
 func makePrefix(namespace string, typeURL string) []byte {
 	var b bytes.Buffer
 	b.Grow(len(namespace) + len(typeURL) + 4)
-	fmt.Fprintf(&b, "//%s/%s/", namespace, typeURL)
+	b.WriteString(fmt.Sprintf("//%s/%s/", namespace, typeURL))
 	return b.Bytes()
 }
 
@@ -135,30 +135,47 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 	}
 
 	gsn := uint64(0)
-	return gsn, handle.db.Update(func(tx *badger.Txn) error {
+
+	err = handle.db.Update(func(tx *badger.Txn) error {
 		if fn != nil {
+			var mutate bool
+			found := true
+
+			handle.log.Debugw("@tallen", "fn", fn)
 			item, err := tx.Get(key)
-			if err != nil {
-				handle.log.Errorw("error reading val", "key", key, "error", err.Error())
+			if err == badger.ErrKeyNotFound {
+				handle.log.Debugw("@tallen key not found")
+				mutate = true
+				found = false
+			} else if err != nil {
+				handle.log.Errorw("error reading val", "key", string(key), "error", err.Error())
 				return err
 			}
 
-			var mutate bool
-			err = item.Value(func(val []byte) error {
-				fres := waterslide_bufs.GetRootAsResource(val, 0)
-				mutate = fn(string(fres.Version()))
-				return nil
-			})
-			if err != nil {
-				handle.log.Errorw("error reading val", "key", key, "error", err.Error())
-				return err
+			if found {
+				err = item.Value(func(val []byte) error {
+					fres := waterslide_bufs.GetRootAsResource(val, 0)
+					v := string(fres.Version())
+					handle.log.Debugw("@tallen", "version", v)
+					mutate = fn(v) || v == ""
+					return nil
+				})
+				if err != nil {
+					handle.log.Errorw("error reading val", "key", key, "error", err.Error())
+					return err
+				}
 			}
+
+			handle.log.Debugw("@tallen", "mutate", mutate)
 
 			// Condition did not pass, so no PUT will occur.
 			if !mutate {
+				handle.log.Debugw("not mutating", "gsn", gsn)
 				return nil
 			}
 		}
+
+		handle.log.Debugw("creating flatbuffer")
 
 		// Set the serialized resource value and version.
 		bv := builder.CreateByteString(b)
@@ -177,6 +194,8 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 		re := waterslide_bufs.ResourceEnd(builder)
 		builder.Finish(re)
 
+		handle.log.Debugw("created flatbuffer", "gsn", gsn)
+
 		// Set the flatbuffer value.
 		err = tx.Set(key, builder.FinishedBytes())
 		if err != nil {
@@ -190,6 +209,10 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 			"bytes_written", len(builder.FinishedBytes()))
 		return err
 	})
+
+	handle.log.Debugw("conditional write complete", "error", err)
+
+	return gsn, err
 }
 
 // Pulls a resource from the database by the given name/type. If the key does not exist, nil resource is returned.
@@ -236,10 +259,11 @@ func (handle *dbHandle) getAllStreaming(ctx context.Context, namespace string, t
 	stream.NumGo = streamGoroutineCount
 	stream.Prefix = makePrefix(namespace, typeURL)
 
-	handle.log.Debugw("performing prefix GET", "prefix", string(stream.Prefix))
+	handle.log.Debugw("performing streaming prefix GET", "prefix", string(stream.Prefix))
 
 	// Send is called serially while Stream.Orchestrate is running, so we don't need to lock |all|.
 	stream.Send = func(buf *z.Buffer) error {
+		handle.log.Debugw("@tallen sending")
 		kvlist, err := badger.BufferToKVList(buf)
 		if err != nil {
 			return err
@@ -264,14 +288,19 @@ func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, 
 	// Pre-allocating slots for extra perf. This may not be necessary.
 	// TODO: Benchmark this and see if it matters.
 	all := make([]*waterslide_bufs.Resource, 0, preallocatedScanCapacity)
-	prefix := makePrefix(namespace, typeURL)
-	handle.log.Errorw("performing prefix GET", "prefix", string(prefix))
 
 	return all, handle.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = makePrefix(namespace, typeURL)
+		handle.log.Debugw("performing prefix GET", "prefix", string(opts.Prefix))
+		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		handle.log.Debugw("@tallen in the view oh goodness",
+			"prefix", string(opts.Prefix), "options", opts, "it", it)
+
+		for it.Seek(opts.Prefix); it.ValidForPrefix(opts.Prefix); it.Next() {
+			handle.log.Debugw("seeking prefix", "prefix", string(opts.Prefix))
 			item := it.Item()
 			valBytes, err := item.ValueCopy(nil)
 			if err != nil {
@@ -282,7 +311,7 @@ func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, 
 			all = append(all, waterslide_bufs.GetRootAsResource(valBytes, 0))
 
 			if err != nil {
-				handle.log.Errorw("prefix scan failed", "prefix", prefix, "error", err.Error())
+				handle.log.Errorw("prefix scan failed", "prefix", opts.Prefix, "error", err.Error())
 				return err
 			}
 		}

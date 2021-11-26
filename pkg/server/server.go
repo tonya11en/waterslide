@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
@@ -14,6 +13,7 @@ import (
 
 	"allen.gg/waterslide/internal/db"
 	"allen.gg/waterslide/internal/util"
+	"allen.gg/waterslide/internal/watcher"
 	"allen.gg/waterslide/pkg/server/protocol"
 )
 
@@ -26,6 +26,7 @@ type server struct {
 	endpointProcessor    *protocol.Processor
 	scopedRouteProcessor *protocol.Processor
 	log                  *zap.SugaredLogger
+	dbhandle             *db.DatabaseHandle
 }
 
 // Creates a new server. If the DB filepath is empty, it will make an in-memory DB.
@@ -39,20 +40,6 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 		Log:      log,
 		DBHandle: handle,
 	}
-
-	// @tallen crazy test
-	go func() {
-		for {
-			time.Sleep(time.Second * 3)
-
-			res := util.MakeRandomResource()
-			_, err := handle.Put(ctx, protocol.CommonNamespace, res.Resource.GetTypeUrl(), res)
-			if err != nil {
-				panic(err.Error())
-			}
-
-		}
-	}()
 
 	config.TypeURL = util.ListenerTypeUrl
 	lp, err := protocol.NewDeltaDiscoveryProcessor(config)
@@ -84,7 +71,7 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 		log.Fatalw("unable to create delta discovery processor", "error", err.Error(), "typeURL", config.TypeURL)
 	}
 
-	return &server{
+	srv := &server{
 		ctx:                  ctx,
 		listenerProcessor:    lp,
 		clusterProcessor:     cp,
@@ -92,7 +79,27 @@ func NewServer(ctx context.Context, log *zap.SugaredLogger, handle db.DatabaseHa
 		scopedRouteProcessor: srp,
 		endpointProcessor:    ep,
 		log:                  log,
+		dbhandle:             &config.DBHandle,
 	}
+
+	go srv.startIngest("/home/tallen/cds.json")
+	go srv.startIngest("/home/tallen/lds.json")
+
+	return srv
+}
+
+func (srv *server) startIngest(path string) {
+	ctx, cancel := context.WithCancel(srv.ctx)
+	defer cancel()
+
+	watcher, err := watcher.NewFilesystemResourceWatcher(ctx, srv.log.Named("fs_watcher"), *srv.dbhandle)
+	if err != nil {
+		srv.log.Fatalw("failed to make fswatcher", "error", err.Error())
+	}
+
+	watcher.Start(path)
+
+	<-srv.ctx.Done()
 }
 
 // A generic RPC stream.
