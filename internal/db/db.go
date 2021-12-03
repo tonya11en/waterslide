@@ -121,7 +121,13 @@ func (handle *dbHandle) Put(ctx context.Context, namespace string, typeURL strin
 	return handle.ConditionalPut(ctx, namespace, typeURL, resource, nil)
 }
 
-func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, typeURL string, resource *discovery.Resource, fn func(resourceVersion string) bool) (uint64, error) {
+func (handle *dbHandle) ConditionalPut(
+	ctx context.Context,
+	namespace string,
+	typeURL string,
+	resource *discovery.Resource,
+	fn func(resourceVersion string) bool) (uint64, error) {
+
 	key := makeKey(namespace, typeURL, resource.GetName())
 	handle.log.Debugw("starting conditional put", "key", string(key), "resource", resource.String())
 
@@ -141,10 +147,8 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 			var mutate bool
 			found := true
 
-			handle.log.Debugw("@tallen", "fn", fn)
 			item, err := tx.Get(key)
 			if err == badger.ErrKeyNotFound {
-				handle.log.Debugw("@tallen key not found")
 				mutate = true
 				found = false
 			} else if err != nil {
@@ -156,7 +160,6 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 				err = item.Value(func(val []byte) error {
 					fres := waterslide_bufs.GetRootAsResource(val, 0)
 					v := string(fres.Version())
-					handle.log.Debugw("@tallen", "version", v)
 					mutate = fn(v) || v == ""
 					return nil
 				})
@@ -165,8 +168,6 @@ func (handle *dbHandle) ConditionalPut(ctx context.Context, namespace string, ty
 					return err
 				}
 			}
-
-			handle.log.Debugw("@tallen", "mutate", mutate)
 
 			// Condition did not pass, so no PUT will occur.
 			if !mutate {
@@ -246,7 +247,6 @@ func (handle *dbHandle) Get(ctx context.Context, namespace string, typeURL strin
 
 func (handle *dbHandle) GetAll(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error) {
 	return handle.getAllStreaming(ctx, namespace, typeURL)
-	//return handle.getAllSequential(ctx, namespace, typeURL)
 }
 
 // A Scan operation that uses iterator streaming.
@@ -263,7 +263,6 @@ func (handle *dbHandle) getAllStreaming(ctx context.Context, namespace string, t
 
 	// Send is called serially while Stream.Orchestrate is running, so we don't need to lock |all|.
 	stream.Send = func(buf *z.Buffer) error {
-		handle.log.Debugw("@tallen sending")
 		kvlist, err := badger.BufferToKVList(buf)
 		if err != nil {
 			return err
@@ -282,42 +281,6 @@ func (handle *dbHandle) getAllStreaming(ctx context.Context, namespace string, t
 		handle.log.Errorw("error orchestrating streaming scan", "error", err.Error())
 	}
 	return all, err
-}
-
-func (handle *dbHandle) getAllSequential(ctx context.Context, namespace string, typeURL string) ([]*waterslide_bufs.Resource, error) {
-	// Pre-allocating slots for extra perf. This may not be necessary.
-	// TODO: Benchmark this and see if it matters.
-	all := make([]*waterslide_bufs.Resource, 0, preallocatedScanCapacity)
-
-	return all, handle.db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = makePrefix(namespace, typeURL)
-		handle.log.Debugw("performing prefix GET", "prefix", string(opts.Prefix))
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		handle.log.Debugw("@tallen in the view oh goodness",
-			"prefix", string(opts.Prefix), "options", opts, "it", it)
-
-		for it.Seek(opts.Prefix); it.ValidForPrefix(opts.Prefix); it.Next() {
-			handle.log.Debugw("seeking prefix", "prefix", string(opts.Prefix))
-			item := it.Item()
-			valBytes, err := item.ValueCopy(nil)
-			if err != nil {
-				handle.log.Errorw("error encountered when copying value in GET op", "error", err.Error())
-				return err
-			}
-
-			all = append(all, waterslide_bufs.GetRootAsResource(valBytes, 0))
-
-			if err != nil {
-				handle.log.Errorw("prefix scan failed", "prefix", opts.Prefix, "error", err.Error())
-				return err
-			}
-		}
-
-		return nil
-	})
 }
 
 func (handle *dbHandle) subscribeInternal(ctx context.Context, prefix []byte, cb func(key string, fbuf *waterslide_bufs.Resource) error) {

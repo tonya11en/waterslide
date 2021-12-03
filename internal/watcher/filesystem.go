@@ -112,11 +112,13 @@ func (rw *ResourceWatcher) Start(filepath string) error {
 				if !ok {
 					return
 				}
+
 				rw.log.Infow("filesystem event received", "event", event)
-				err = rw.handleEvent(event)
-				if err != nil {
-					rw.log.Errorw("error handling filesystem event", "error", err.Error())
-					return
+				for err = rw.handleEvent(event); err != nil; {
+					if err != nil {
+						rw.log.Errorw("error handling filesystem event", "error", err.Error())
+						return
+					}
 				}
 
 			case err, ok := <-rw.watcher.Errors:

@@ -5,12 +5,12 @@ import (
 	"flag"
 	"net"
 
-	"allen.gg/waterslide/internal/db"
-	"allen.gg/waterslide/pkg/server"
+	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	"allen.gg/waterslide/internal/db"
+	"allen.gg/waterslide/pkg/server"
 )
 
 var (
